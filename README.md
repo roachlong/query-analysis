@@ -16,15 +16,17 @@ If we're executing the PoC as a stand alone lab we can install and run a single 
 
 Then open a new Mac Terminal or PowerShell window and execute the following command to launch your single node database.
 ```
-cockroach start-single-node --insecure --store=./data
+cockroach start-single-node --insecure --store=./data --background
 ```
 Then open a browser to http://localhost:8080 to view the dashboard for your local cockroach instance
 
-There are also a few cluster settings that manage how much information is stored in our internal obseravbility tables.  The default values for these have been decreased since v24.1 in an effort to reduce cardinality of information collected and decrease memory pressure leading to improved performance.  But these default values may be artificially low for many workloads and small cluster sizes.  For benchmark testing, where we can control the velocity and volumne of data for our workloads, we can safely adjust these settings and observe the behavior in our system.
+There are also a few cluster settings that manage how much information is stored in our internal obseravbility tables.  The default values for these have been decreased since v24.1 in an effort to reduce cardinality of information collected and decrease memory pressure leading to improved performance.  But these default values may be artificially low for many workloads and small cluster sizes.  For benchmark testing, in non-production environments where we can control the velocity and volumne of data for our workloads, you may be able to adjust these settings and observe the behavior in our system.
 ```
+cockroach sql --url "$conn_str" -e """
 set cluster setting sql.metrics.max_mem_stmt_fingerprints = 100000;  -- instead of 7500
 set cluster setting sql.metrics.max_mem_txn_fingerprints = 100000;  -- instead of 7500
 set cluster setting sql.insights.execution_insights_capacity = 20000;  -- instead of 1000
+"""
 ```
 
 
@@ -36,20 +38,59 @@ First we'll store the connection string as a variable in our terminal shell wind
 conn_str="postgresql://localhost:26257/schedules?sslmode=disable"
 ```
 
-For demonstration purposes I'm going to capture observability information from the following CRDB internal tables.
+For demonstration purposes I'm going to capture observability information from the following crdb_internal tables.
 - transaction_contention_events
 - cluster_execution_insights
 - transaction_statistics
 - statement_statistics
 
-We can create the storage tables with TTL enabled and helper functions to load the tables by executing the following scripts based on your version of CRDB, v24 or v25.
+We can create the storage tables with TTL enabled and helper functions to load the tables by executing the following scripts based on your version of CRDB.
 ```
-cockroach sql --url "$conn_str" -f 00-query-analysis-tables.sql
+cockroach sql --url "$conn_str" -f 01-query-analysis-tables.sql
+
+-- and if you want to use a cron job
+cockroach sql --url "$conn_str" -f 02a-copy-obs-function.sql
+-- or if you want to leverage triggers v24.3+
+cockroach sql --url "$conn_str" -f 02b-copy-obs-triggers.sql
+
 -- and either v24
-cockroach sql --url "$conn_str" -f 01-v24-query-analysis-procedures.sql
+cockroach sql --url "$conn_str" -f 03-v24-query-analysis-procedure.sql
 -- or v25 script
-cockroach sql --url "$conn_str" -f 01-v25-query-analysis-functions.sql
+cockroach sql --url "$conn_str" -f 03-v25-query-analysis-function.sql
 ```
+
+If you're on a version <24.3 or you want to leverage a scheduled job to copy the observability metrics (instead of triggers) then you can setup a cron job to update your physical observability tables periodically by adding a similar line below to ```crontab -e```.
+```
+* * * * * /opt/homebrew/bin/cockroach sql --url "postgresql://localhost:26257/schedules?sslmode=disable" -e="SELECT workload_test.copy_test_run_observations();" >> /var/log/crdb/copy_test_run_observations.log 2>&1
+```
+
+You may also want to setup a log directory and configure log rotation
+```
+sudo mkdir -p /var/log/crdb
+sudo chown $(whoami) /var/log/crdb
+brew install logrotate
+sudo tee /opt/homebrew/etc/logrotate.d/copy_test_run_observations << 'EOF'
+/var/log/crdb/copy_test_run_observations.log {
+    # don’t complain if the file is missing
+    missingok
+    # skip rotation if the file is empty
+    notifempty
+    # gzip old logs to save space
+    compress
+    # compress from the *previous* rotation, not immediately
+    delaycompress
+    # copy & truncate the live file so cron can keep writing
+    copytruncate
+    # keep 4 old logs before deleting
+    rotate 4
+    # rotate once a day
+    daily
+    # append YYYYMMDD to rotated names
+    dateext
+}
+EOF
+```
+And then check the status with ```grep cron /var/log/system.log```, ```cat /var/mail/username``` and ```tail -100f /var/log/crdb/copy_test_run_observations.log```
 
 
 ## dbworkload
@@ -58,7 +99,7 @@ This is a tool we use to simulate data flowing into cockroach, developed by one 
 echo -e '\nexport PATH=`python3 -m site --user-base`/bin:$PATH' >> ~/.bashrc 
 source ~/.bashrc
 ```
-For Windows you can add the location of the dbworkload.exe file (i.e. C:\Users\myname\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.9_abcdefghijk99\LocalCache\local-packages\Python39\Scripts) to your Windows Path environment variable.  The pip command above should provide the exact path to your local python executables.
+For Windows it's just ```pip install dbworkload``` and you can add the location of the dbworkload.exe file (i.e. C:\Users\myname\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.9_abcdefghijk99\LocalCache\local-packages\Python39\Scripts) to your Windows Path environment variable.  The pip command above should provide the exact path to your local python executables.
 
 
 ## Sample Workload
@@ -87,6 +128,23 @@ batch_size=16
 delay=100
 ```
 
+Before we run the test, let's insert a record into our test run configurations table to record observations for the next hour
+```
+cockroach sql --url "$conn_str" -e """
+INSERT INTO workload_test.test_run_configurations (
+  test_run,
+  database_name,
+  start_time,
+  end_time
+) VALUES (
+  'load_test_2025_06_15',            -- your test_run name
+  'schedules',                       -- the database you’re targeting
+  NOW(),                             -- when the test started
+  NOW() + INTERVAL '1 hour'          -- when it ends
+);
+"""
+```
+
 Then we can use our dbworkload script to simulate the workload.  **Note**: with Windows PowerShell replace each backslash double quote(\\") with a pair of double quotes around the json properties, i.e. ``` ""batch_size"": ""$batch_size"" ```
 ```
 dbworkload run -w transactions.py -c $num_connections -d $(( ${duration} * 60 )) --uri "$conn_str" --args "{
@@ -103,84 +161,83 @@ dbworkload run -w transactions.py -c $num_connections -d $(( ${duration} * 60 ))
 When the workload completes it will print out a summary of percentile latencies for each transaction.
 ```
 -------------  ----------------------------
-run_name       Transactions.20250529_201257
-start_time     2025-05-29 20:12:57
-end_time       2025-05-29 21:12:58
-test_duration  3601
+run_name       Transactions.20250615_170934
+start_time     2025-06-15 17:09:34
+end_time       2025-06-15 18:09:34
+test_duration  3600
 -------------  ----------------------------
 
 ┌───────────┬────────────┬───────────┬───────────┬─────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
 │   elapsed │ id         │   threads │   tot_ops │   tot_ops/s │   mean(ms) │   p50(ms) │   p90(ms) │   p95(ms) │   p99(ms) │   max(ms) │
 ├───────────┼────────────┼───────────┼───────────┼─────────────┼────────────┼───────────┼───────────┼───────────┼───────────┼───────────┤
-│     3,601 │ __cycle__  │         4 │    17,994 │           4 │     800.13 │    787.96 │  1,184.45 │  1,222.64 │  1,559.30 │  1,979.30 │
-│     3,601 │ contention │         4 │    17,994 │           4 │      15.04 │      0.00 │     78.86 │    145.22 │    162.24 │    217.76 │
-│     3,601 │ inventory  │         4 │    17,994 │           4 │     293.85 │    387.86 │    402.31 │    409.64 │    430.23 │    818.22 │
-│     3,601 │ price      │         4 │    17,994 │           4 │      99.33 │      0.01 │    392.78 │    398.54 │    414.92 │    740.11 │
-│     3,601 │ schedule   │         4 │    17,994 │           4 │      38.86 │      0.00 │    231.88 │    384.72 │    398.45 │    801.86 │
-│     3,601 │ status     │         4 │    17,994 │           4 │     353.04 │    390.71 │    404.38 │    412.33 │    432.96 │    848.84 │
+│     3,600 │ __cycle__  │         4 │    17,323 │           4 │     831.07 │    814.73 │  1,227.23 │  1,259.62 │  1,621.63 │  3,196.43 │
+│     3,600 │ contention │         4 │    17,323 │           4 │      14.13 │      0.00 │     58.45 │    143.14 │    161.07 │    176.84 │
+│     3,600 │ inventory  │         4 │    17,323 │           4 │     306.37 │    403.15 │    415.19 │    422.13 │    450.83 │  1,372.94 │
+│     3,600 │ price      │         4 │    17,323 │           4 │     103.87 │      0.01 │    405.98 │    410.74 │    428.88 │    934.72 │
+│     3,600 │ schedule   │         4 │    17,323 │           4 │      39.30 │      0.00 │    190.22 │    406.04 │    418.13 │  1,079.71 │
+│     3,600 │ status     │         4 │    17,323 │           4 │     367.39 │    404.59 │    416.22 │    423.83 │    452.59 │  1,344.18 │
 └───────────┴────────────┴───────────┴───────────┴─────────────┴────────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
 ```
 
 
 ## Data Collection
-We can also get more grainular information on transaction and statememt statistics from the CRDB Admin Console, which are backed by our CRDB internal observability tables.  But if we export that data into our own tables then we'll be able to compare metrics between runs and measure performance improvements over time.  The following function call will capture the metrics for our latest run, which will include four tables for demonstration purposes to pull the contention records, query insights, statement and transaction statistics collected during the run.
+We can also get more grainular information on transaction and statememt statistics from the CRDB Admin Console, which are backed by our CRDB internal observability tables.  And since we're exporting the data into our own physical tables can compare metrics between runs and measure performance improvements over time.  If you're not using triggers or a cron job to schedule copies then the following function call can be used to capture the metrics for any actively running tests.  This will include four tables for demonstration purposes to pull the contention records, query insights, statement and transaction statistics collected during the run.
 ```
 cockroach sql --url "$conn_str" -e """
-SELECT *
-FROM copy_test_run_observations(
-  20250609,      -- test run id, default to next incremental id
-  '2025-06-09 17:00:00.000000+00'::TIMESTAMPTZ,      -- starting from, default to past 24 hours
-  NULL           -- going until, default to now()
-);
+SELECT workload_test.copy_test_run_observations();
 """
 
--- example results from v24
                            copy_test_run_observations
 --------------------------------------------------------------------------------
   {"contention": 81, "insights": 6317, "statements": 894, "transactions": 470}
-
--- example results from v25
-  contention | insights | statements | transactions
--------------+----------+------------+---------------
-           4 |      315 |        315 |          115
 ```
 
 And then, for example, we can grab any exception in the workload's log output to investigate statements related to the failed transaction.
 ```
-v24_error_str_1=$(cat <<EOF
-Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: ReadWithinUncertaintyIntervalError: read at time 1749492443.135479675,0 encountered previous write with future timestamp 1749492443.135479675,1 within uncertainty interval `t <= (local=1749492443.137084219,0, global=1749492443.635479675,0)`; observed timestamps: [{2 1749492443.135479675,0} {3 1749492443.137084219,0}]: "sql txn" meta={id=8c17c756 key=/Min iso=Serializable pri=0.00477964 epo=0 ts=1749492443.135479675,0 min=1749492443.135479675,0 seq=0} lock=false stat=PENDING rts=1749492443.135479675,0 wto=false gul=1749492443.635479675,0
+error_str_1=$(cat <<EOF
+Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 at timestamp 1750013670.819414000,0 too old; must write at or above 1750013670.819414000,2: "sql txn" meta={id=0779ed1d key=/Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 iso=Serializable pri=0.02016719 epo=0 ts=1750013670.819414000,2 min=1750013670.819414000,0 seq=1} lock=true stat=PENDING rts=1750013670.819414000,0 wto=false gul=1750013671.319414000,0
 EOF
 )
 
-v24_error_str_2=$(cat <<EOF
-Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/125/1/"\xaa\xb0\xe8s_\xcaJ\x1d\x8e\x14\n;\x03Ö*"/0 at timestamp 1749492252.213212665,0 too old; must write at or above 1749492252.213212665,2: "sql txn" meta={id=76f71f0e key=/Table/125/1/"\xaa\xb0\xe8s_\xcaJ\x1d\x8e\x14\n;\x03Ö*"/0 iso=Serializable pri=0.02625985 epo=0 ts=1749492252.213212665,2 min=1749492252.213212665,0 seq=1} lock=true stat=PENDING rts=1749492252.213212665,0 wto=false gul=1749492252.713212665,0
+error_str_2=$(cat <<EOF
+Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 at timestamp 1750013680.022981000,0 too old; must write at or above 1750013680.022981000,2: "sql txn" meta={id=d0da9768 key=/Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 iso=Serializable pri=0.00716173 epo=0 ts=1750013680.022981000,2 min=1750013680.022981000,0 seq=1} lock=true stat=PENDING rts=1750013680.022981000,0 wto=false gul=1750013680.522981000,0
 EOF
 )
+```
 
-v25_error_str_3=$(cat <<EOF
-Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/156/1/"C-O\xab\r\xdaM\v\x94\x01\xb03\nzߟ"/0 at timestamp 1748553143.702115000,0 too old; must write at or above 1748553143.702115000,2: "sql txn" meta={id=d039504e key=/Table/156/1/"C-O\xab\r\xdaM\v\x94\x01\xb03\nzߟ"/0 iso=Serializable pri=0.00553518 epo=0 ts=1748553143.702115000,2 min=1748553143.702115000,0 seq=1} lock=true stat=PENDING rts=1748553143.702115000,0 wto=false gul=1748553144.202115000,0 obs={n1@1748553143.702115000,0}
-EOF
-)
-
--- and either v24
+and either v24
+```
 cockroach sql --url "$conn_str" -e """
-CALL inspect_contention_from_exception(
-  '$$(echo "$v24_error_str_2")$$',
+CALL workload_test.inspect_contention_from_exception(
+  '$$(echo "$error_str_2")$$',
   NULL,              -- out select_query
-  'test-caller-1',   -- in caller_id
+  'test-caller-2',   -- in caller_id
   'Transactions',    -- in app_name
   'public',          -- in schema_name
   'same_app'         -- in contention option
 );
 """
 
-                   id                  |   caller_id   | ord |  role   | status | collection_ts |     aggregated_ts      |   app_name   | database_name | schema_name | table_name | index_name |                           txn_metadata                           |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               txn_statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | contention_type | contention |   fingerprint_id   | transaction_fingerprint_id |     plan_hash      |                                                                                                                 stmt_metadata                                                                                                                  |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          stmt_statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |         sampled_plan         | aggregation_interval |                                         index_recommendations
----------------------------------------+---------------+-----+---------+--------+---------------+------------------------+--------------+---------------+-------------+------------+------------+------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------------+------------+--------------------+----------------------------+--------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------+----------------------+---------------------------------------------------------------------------------------------------------
-  c442bca8-feec-4c6d-83f0-7a610dc5c39b | test-caller-1 |   1 | waiting | NULL   | NULL          | 2025-06-09 18:00:00+00 | Transactions | NULL          | NULL        | NULL       | NULL       | {"stmtFingerprintIDs": ["2ab0c15b7b14e792", "67a10dfb99638ead"]} | {"execution_statistics": {"cnt": 291, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 6733.360824742268, "sqDiff": 592083369041.1134}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 985.2920962199313, "sqDiff": 11461548250.171824}, "mvccIteratorStats": {"blockBytes": {"mean": 1020.1305841924399, "sqDiff": 12304758071.037802}, "blockBytesInCache": {"mean": 1020.1305841924399, "sqDiff": 12304758071.037802}, "keyBytes": {"mean": 1020.1305841924399, "sqDiff": 12304758071.037802}, "pointCount": {"mean": 1.0034364261168385, "sqDiff": 11890.996563573883}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 0.04810996563573885, "sqDiff": 27.32646048109966}, "seekCountInternal": {"mean": 0.04810996563573885, "sqDiff": 27.32646048109966}, "stepCount": {"mean": 0.9621993127147767, "sqDiff": 10930.584192439865}, "stepCountInternal": {"mean": 1.0034364261168385, "sqDiff": 11890.996563573883}, "valueBytes": {"mean": 40.81786941580755, "sqDiff": 19673777.347079035}}, "networkBytes": {"mean": 8.549828178694158, "sqDiff": 1216808.027491409}, "networkMsgs": {"mean": 0.051546391752577324, "sqDiff": 44.22680412371135}}, "statistics": {"bytesRead": {"mean": 3256.020270270271, "sqDiff": 10602703.878378373}, "cnt": 296, "commitLat": {"mean": 0.0016702007939189193, "sqDiff": 0.00034708211631861855}, "idleLat": {"mean": 0.038284246111486474, "sqDiff": 0.04509850466654131}, "maxRetries": 0, "numRows": {"mean": 1.9831081081081077, "sqDiff": 4.9155405405405395}, "retryLat": {"mean": 0, "sqDiff": 0}, "rowsRead": {"mean": 39.72972972972973, "sqDiff": 1578.378378378378}, "rowsWritten": {"mean": 0.9864864864864865, "sqDiff": 3.945945945945946}, "svcLat": {"mean": 0.041017992648648645, "sqDiff": 0.044438890492360016}}} | NULL            |     f      | \x2ab0c15b7b14e792 | \x1c0d24389254fc7a         | \x025144e18ceb2338 | {"db": "schedules", "distsql": true, "fullScan": true, "implicitTxn": false, "query": "SELECT * FROM airports WHERE city = _", "querySummary": "SELECT * FROM airports", "stmtType": "TypeDML", "vec": true}                                   | {"execution_statistics": {"cnt": 7, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 70672.57142857143, "sqDiff": 6865387277.714287}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 35108.57142857143, "sqDiff": 599186285.7142856}, "mvccIteratorStats": {"blockBytes": {"mean": 21204.14285714286, "sqDiff": 4588278.857142857}, "blockBytesInCache": {"mean": 21204.14285714286, "sqDiff": 4588278.857142857}, "keyBytes": {"mean": 21204.14285714286, "sqDiff": 4588278.857142857}, "pointCount": {"mean": 20.857142857142858, "sqDiff": 0.8571428571428567}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 1, "sqDiff": 0}, "seekCountInternal": {"mean": 1, "sqDiff": 0}, "stepCount": {"mean": 2E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 20.857142857142858, "sqDiff": 0.8571428571428567}, "valueBytes": {"mean": 848.4285714285714, "sqDiff": 835.714285714286}}, "networkBytes": {"mean": 355.42857142857144, "sqDiff": 353773.7142857143}, "networkMsgs": {"mean": 2.142857142857143, "sqDiff": 12.857142857142858}}, "index_recommendations": ["creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"], "statistics": {"bytesRead": {"mean": 1639.0844594594596, "sqDiff": 102.88851351351644}, "cnt": 296, "failureCount": 0, "firstAttemptCnt": 296, "idleLat": {"mean": 0.0011829846621621617, "sqDiff": 0.00023395642102823626}, "indexes": ["125@1"], "kvNodeIds": [3], "lastErrorCode": "", "lastExecAt": "2025-06-09T18:08:15.14736132Z", "latencyInfo": {"max": 0.01286602, "min": 0.000276209, "p50": 0, "p90": 0, "p99": 0}, "maxRetries": 0, "nodes": [1, 2, 3], "numRows": {"mean": 1, "sqDiff": 0}, "ovhLat": {"mean": 0.000004733824324324324, "sqDiff": 7.577955694864832E-9}, "parseLat": {"mean": 0.0000062301587837837835, "sqDiff": 1.2976826910553713E-7}, "planGists": ["AgH6AQIAHwAAAAMGCg=="], "planLat": {"mean": 0.00021102250337837834, "sqDiff": 0.00013998882605785996}, "regions": ["Central US", "East US", "West US"], "rowsRead": {"mean": 2E+1, "sqDiff": 0}, "rowsWritten": {"mean": 0, "sqDiff": 0}, "runLat": {"mean": 0.0011220100912162165, "sqDiff": 0.0002822323035534146}, "sqlType": "TypeDML", "svcLat": {"mean": 0.0013439965777027028, "sqDiff": 0.00043726568652623413}, "usedFollowerRead": false}}                 | {"Children": [], "Name": ""} | 01:00:00             | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}
-  e118656c-423e-4563-bd3e-17a7addc2b18 | test-caller-1 |   2 | waiting | NULL   | NULL          | 2025-06-09 18:00:00+00 | Transactions | NULL          | NULL        | NULL       | NULL       | {"stmtFingerprintIDs": ["2ab0c15b7b14e792", "67a10dfb99638ead"]} | {"execution_statistics": {"cnt": 291, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 6733.360824742268, "sqDiff": 592083369041.1134}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 985.2920962199313, "sqDiff": 11461548250.171824}, "mvccIteratorStats": {"blockBytes": {"mean": 1020.1305841924399, "sqDiff": 12304758071.037802}, "blockBytesInCache": {"mean": 1020.1305841924399, "sqDiff": 12304758071.037802}, "keyBytes": {"mean": 1020.1305841924399, "sqDiff": 12304758071.037802}, "pointCount": {"mean": 1.0034364261168385, "sqDiff": 11890.996563573883}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 0.04810996563573885, "sqDiff": 27.32646048109966}, "seekCountInternal": {"mean": 0.04810996563573885, "sqDiff": 27.32646048109966}, "stepCount": {"mean": 0.9621993127147767, "sqDiff": 10930.584192439865}, "stepCountInternal": {"mean": 1.0034364261168385, "sqDiff": 11890.996563573883}, "valueBytes": {"mean": 40.81786941580755, "sqDiff": 19673777.347079035}}, "networkBytes": {"mean": 8.549828178694158, "sqDiff": 1216808.027491409}, "networkMsgs": {"mean": 0.051546391752577324, "sqDiff": 44.22680412371135}}, "statistics": {"bytesRead": {"mean": 3256.020270270271, "sqDiff": 10602703.878378373}, "cnt": 296, "commitLat": {"mean": 0.0016702007939189193, "sqDiff": 0.00034708211631861855}, "idleLat": {"mean": 0.038284246111486474, "sqDiff": 0.04509850466654131}, "maxRetries": 0, "numRows": {"mean": 1.9831081081081077, "sqDiff": 4.9155405405405395}, "retryLat": {"mean": 0, "sqDiff": 0}, "rowsRead": {"mean": 39.72972972972973, "sqDiff": 1578.378378378378}, "rowsWritten": {"mean": 0.9864864864864865, "sqDiff": 3.945945945945946}, "svcLat": {"mean": 0.041017992648648645, "sqDiff": 0.044438890492360016}}} | NULL            |     f      | \x67a10dfb99638ead | \x1c0d24389254fc7a         | \xfc4bcd4933e6c787 | {"db": "schedules", "distsql": false, "fullScan": true, "implicitTxn": false, "query": "UPDATE airports SET country = _ WHERE city = _", "querySummary": "UPDATE airports SET country = _ WHERE city = _", "stmtType": "TypeDML", "vec": true} | {"execution_statistics": {"cnt": 7, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 209242.85714285713, "sqDiff": 54148978650.85715}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 4.096E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 21204.14285714286, "sqDiff": 4588278.857142857}, "blockBytesInCache": {"mean": 21204.14285714286, "sqDiff": 4588278.857142857}, "keyBytes": {"mean": 21204.14285714286, "sqDiff": 4588278.857142857}, "pointCount": {"mean": 20.857142857142858, "sqDiff": 0.8571428571428567}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 1, "sqDiff": 0}, "seekCountInternal": {"mean": 1, "sqDiff": 0}, "stepCount": {"mean": 2E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 20.857142857142858, "sqDiff": 0.8571428571428567}, "valueBytes": {"mean": 848.4285714285714, "sqDiff": 835.714285714286}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "index_recommendations": ["creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"], "statistics": {"bytesRead": {"mean": 1616.9358108108108, "sqDiff": 10601287.780405408}, "cnt": 296, "failureCount": 5, "firstAttemptCnt": 296, "idleLat": {"mean": 0.03586411821959459, "sqDiff": 0.04377888378679079}, "indexes": ["125@1"], "kvNodeIds": [3], "lastErrorCode": "40001", "lastExecAt": "2025-06-09T18:08:15.1811487Z", "latencyInfo": {"max": 0.007477927, "min": 0.000314793, "p50": 0, "p90": 0, "p99": 0}, "maxRetries": 0, "nodes": [1, 2, 3], "numRows": {"mean": 0.9831081081081081, "sqDiff": 4.915540540540539}, "ovhLat": {"mean": 0.000002927949324324313, "sqDiff": 1.633504437023987E-8}, "parseLat": {"mean": 0.000009110945945945944, "sqDiff": 0.000001021194286739135}, "planGists": ["AgH6AQIAHwAAAAMHDAUMIfoBAAA="], "planLat": {"mean": 0.00013621189527027029, "sqDiff": 0.000001915332284807754}, "regions": ["Central US", "East US", "West US"], "rowsRead": {"mean": 19.729729729729737, "sqDiff": 1578.3783783783783}, "rowsWritten": {"mean": 0.9864864864864865, "sqDiff": 3.945945945945945}, "runLat": {"mean": 0.0014028173209459458, "sqDiff": 0.0003442424742886165}, "sqlType": "TypeDML", "svcLat": {"mean": 0.0015510681114864866, "sqDiff": 0.0003649870099273693}, "usedFollowerRead": false}} | {"Children": [], "Name": ""} | 01:00:00             | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}
+cockroach sql --url "$conn_str" -e """
+SELECT   collection_ts,   database_name,   schema_name,   table_name,   index_name,   contention_type,   app_name,   encode(transaction_fingerprint_id, 'hex') AS txn_fingerprint_id,   role AS tnx_type,   contention,   encode(fingerprint_id, 'hex') AS stmt_fingerprint_id,   stmt_metadata->'fullScan' AS fullscan,   index_recommendations,   ord AS stmt_order,   stmt_metadata->'query' AS sql_statement FROM workload_test.caller_contention_results WHERE caller_id = 'test-caller-2' ORDER BY ord;
+"""
 
+          collection_ts         | database_name | schema_name | table_name | index_name | contention_type |   app_name   | txn_fingerprint_id | tnx_type | contention | stmt_fingerprint_id | fullscan |                                                                                            index_recommendations                                                                                            | stmt_order |                  sql_statement
+--------------------------------+---------------+-------------+------------+------------+-----------------+--------------+--------------------+----------+------------+---------------------+----------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------+---------------------------------------------------
+  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          1 | "SELECT * FROM airports WHERE city = _"
+  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          1 | "SELECT * FROM airports WHERE city = _"
+  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          1 | "SELECT * FROM airports WHERE city = _"
+  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          1 | "SELECT * FROM airports WHERE city = _"
+  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          1 | "SELECT * FROM airports WHERE city = _"
+  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          2 | "UPDATE airports SET country = _ WHERE city = _"
+  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | "UPDATE airports SET country = _ WHERE city = _"
+  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | "UPDATE airports SET country = _ WHERE city = _"
+  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          2 | "UPDATE airports SET country = _ WHERE city = _"
+  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | "UPDATE airports SET country = _ WHERE city = _"
+```
 
--- or v25 script
+or v25 script
+```
 cockroach sql --url "$conn_str" -e """
 SELECT * 
 FROM inspect_contention_from_exception(

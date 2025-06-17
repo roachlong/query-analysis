@@ -1,224 +1,7 @@
 USE schedules;
 
 
-
-CREATE OR REPLACE FUNCTION schedules.copy_test_run_observations(
-  in_test_run  BIGINT        DEFAULT NULL,
-  in_from_ts   TIMESTAMPTZ   DEFAULT NULL,
-  in_to_ts     TIMESTAMPTZ   DEFAULT NULL
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  run_id     BIGINT;
-  from_ts    TIMESTAMPTZ;
-  to_ts      TIMESTAMPTZ;
-  cnt_cont   BIGINT;
-  cnt_ins    BIGINT;
-  cnt_stmt   BIGINT;
-  cnt_txn    BIGINT;
-BEGIN
-  -- 1) determine run ID and time window
-  SELECT
-    COALESCE(in_test_run, COALESCE(MAX(test_run) + 1, 0)),
-    COALESCE(in_from_ts,  NOW() - INTERVAL '24 hours'),
-    COALESCE(in_to_ts,    NOW())
-  INTO run_id, from_ts, to_ts
-  FROM schedules.test_run_transaction_statistics;
-
-  -- 2) insert contention events
-  INSERT INTO schedules.test_run_contention_events (
-    test_run,
-    collection_ts,
-    blocking_txn_id,
-    blocking_txn_fingerprint_id,
-    waiting_txn_id,
-    waiting_txn_fingerprint_id,
-    contention_duration,
-    contending_key,
-    contending_pretty_key,
-    waiting_stmt_id,
-    waiting_stmt_fingerprint_id,
-    database_name,
-    schema_name,
-    table_name,
-    index_name,
-    contention_type
-  )
-  SELECT
-    run_id,
-    e.collection_ts,
-    e.blocking_txn_id,
-    e.blocking_txn_fingerprint_id,
-    e.waiting_txn_id,
-    e.waiting_txn_fingerprint_id,
-    e.contention_duration,
-    e.contending_key,
-    e.contending_pretty_key,
-    e.waiting_stmt_id,
-    e.waiting_stmt_fingerprint_id,
-    e.database_name,
-    e.schema_name,
-    e.table_name,
-    e.index_name,
-    e.contention_type
-  FROM crdb_internal.transaction_contention_events AS e
-  WHERE e.collection_ts BETWEEN from_ts AND to_ts;
-
-  -- 3) insert execution insights
-  INSERT INTO schedules.test_run_execution_insights (
-    test_run,
-    session_id,
-    txn_id,
-    txn_fingerprint_id,
-    stmt_id,
-    stmt_fingerprint_id,
-    problem,
-    causes,
-    query,
-    status,
-    start_time,
-    end_time,
-    full_scan,
-    user_name,
-    app_name,
-    database_name,
-    plan_gist,
-    rows_read,
-    rows_written,
-    priority,
-    retries,
-    last_retry_reason,
-    exec_node_ids,
-    kv_node_ids,
-    contention,
-    index_recommendations,
-    implicit_txn,
-    cpu_sql_nanos,
-    error_code,
-    last_error_redactable
-  )
-  SELECT
-    run_id,
-    i.session_id,
-    i.txn_id,
-    i.txn_fingerprint_id,
-    i.stmt_id,
-    i.stmt_fingerprint_id,
-    i.problem,
-    i.causes,
-    i.query,
-    i.status,
-    i.start_time,
-    i.end_time,
-    i.full_scan,
-    i.user_name,
-    i.app_name,
-    i.database_name,
-    i.plan_gist,
-    i.rows_read,
-    i.rows_written,
-    i.priority,
-    i.retries,
-    i.last_retry_reason,
-    i.exec_node_ids,
-    i.kv_node_ids,
-    i.contention,
-    i.index_recommendations,
-    i.implicit_txn,
-    i.cpu_sql_nanos,
-    i.error_code,
-    i.last_error_redactable
-  FROM crdb_internal.cluster_execution_insights AS i
-  WHERE i.start_time BETWEEN from_ts AND to_ts;
-
-  -- 4) insert statement stats
-  INSERT INTO schedules.test_run_statement_statistics (
-    test_run,
-    aggregated_ts,
-    fingerprint_id,
-    transaction_fingerprint_id,
-    plan_hash,
-    app_name,
-    metadata,
-    statistics,
-    sampled_plan,
-    aggregation_interval,
-    index_recommendations
-  )
-  SELECT
-    run_id,
-    s.aggregated_ts,
-    s.fingerprint_id,
-    s.transaction_fingerprint_id,
-    s.plan_hash,
-    s.app_name,
-    s.metadata,
-    s.statistics,
-    s.sampled_plan,
-    s.aggregation_interval,
-    s.index_recommendations
-  FROM crdb_internal.statement_statistics AS s
-  WHERE s.aggregated_ts BETWEEN from_ts AND to_ts;
-
-  -- 5) insert transaction stats
-  INSERT INTO schedules.test_run_transaction_statistics (
-    test_run,
-    aggregated_ts,
-    fingerprint_id,
-    app_name,
-    metadata,
-    statistics,
-    aggregation_interval
-  )
-  SELECT
-    run_id,
-    x.aggregated_ts,
-    x.fingerprint_id,
-    x.app_name,
-    x.metadata,
-    x.statistics,
-    x.aggregation_interval
-  FROM crdb_internal.transaction_statistics AS x
-  WHERE x.aggregated_ts BETWEEN from_ts AND to_ts;
-
-  -- 6) now compute counts by querying each target table
-  SELECT COUNT(*) INTO cnt_cont
-    FROM schedules.test_run_contention_events
-   WHERE test_run = run_id
-     AND collection_ts BETWEEN from_ts AND to_ts;
-
-  SELECT COUNT(*) INTO cnt_ins
-    FROM schedules.test_run_execution_insights
-   WHERE test_run = run_id
-     AND start_time BETWEEN from_ts AND to_ts;
-
-  SELECT COUNT(*) INTO cnt_stmt
-    FROM schedules.test_run_statement_statistics
-   WHERE test_run = run_id
-     AND aggregated_ts BETWEEN from_ts AND to_ts;
-
-  SELECT COUNT(*) INTO cnt_txn
-    FROM schedules.test_run_transaction_statistics
-   WHERE test_run = run_id
-     AND aggregated_ts BETWEEN from_ts AND to_ts;
-
-  -- 7) return a single JSONB object
-  RETURN jsonb_build_object(
-    'contention',   cnt_cont,
-    'insights',     cnt_ins,
-    'statements',   cnt_stmt,
-    'transactions', cnt_txn
-  );
-END;
-$$;
-
-
-
-
-
-CREATE TABLE IF NOT EXISTS schedules.inspect_contention_results (
+CREATE TABLE IF NOT EXISTS workload_test.caller_contention_results (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   caller_id STRING DEFAULT gen_random_uuid()::STRING,  -- to isolate caller
   ord INT,
@@ -246,10 +29,7 @@ CREATE TABLE IF NOT EXISTS schedules.inspect_contention_results (
 );
 
 
-
-
-
-CREATE TABLE IF NOT EXISTS schedules.staging_failed_selection (
+CREATE TABLE IF NOT EXISTS workload_test.caller_failed_statement (
   caller_id STRING PRIMARY KEY,
   collection_ts TIMESTAMPTZ,
   blocking_txn_fingerprint_id BYTES,
@@ -264,10 +44,7 @@ CREATE TABLE IF NOT EXISTS schedules.staging_failed_selection (
 );
 
 
-
-
-
-CREATE OR REPLACE PROCEDURE schedules.inspect_contention_from_exception(
+CREATE OR REPLACE PROCEDURE workload_test.inspect_contention_from_exception(
   exception_str     STRING,
   OUT select_query  STRING,
   in_caller_id      STRING DEFAULT gen_random_uuid()::STRING,
@@ -283,8 +60,8 @@ DECLARE
   conflict_ts       TIMESTAMPTZ;
   txn_id_prefix     STRING;
 BEGIN
-  RAISE NOTICE 'DEBUG parameters: in_caller_id=%, in_app_name=%, in_schema_name=%, in_option=%',
-    in_caller_id, in_app_name, in_schema_name, in_option;
+  -- RAISE NOTICE 'DEBUG parameters: in_caller_id=%, in_app_name=%, in_schema_name=%, in_option=%',
+  --   in_caller_id, in_app_name, in_schema_name, in_option;
 
   -- Extract values from exception_str into variables
   SELECT
@@ -294,12 +71,12 @@ BEGIN
     substring(exception_str FROM '"sql txn" meta=\{id=([0-9A-Fa-f]+)')
   INTO retry_error_type, contention_key, conflict_ts, txn_id_prefix;
 
-  RAISE NOTICE 'DEBUG extracted: retry_error_type=%, key=%, ts=%, txn_id_prefix=%',
-    retry_error_type, contention_key, conflict_ts, txn_id_prefix;
+  -- RAISE NOTICE 'DEBUG extracted: retry_error_type=%, key=%, ts=%, txn_id_prefix=%',
+  --   retry_error_type, contention_key, conflict_ts, txn_id_prefix;
 
-  DELETE FROM schedules.staging_failed_selection WHERE caller_id = in_caller_id;
+  DELETE FROM workload_test.caller_failed_statement WHERE caller_id = in_caller_id;
 
-  INSERT INTO schedules.staging_failed_selection
+  INSERT INTO workload_test.caller_failed_statement
   SELECT
     in_caller_id,
     c.collection_ts,
@@ -312,8 +89,8 @@ BEGIN
     c.index_name,
     c.contention_type,
     COALESCE(i.stmt_fingerprint_id, c.waiting_stmt_fingerprint_id) AS stmt_fingerprint_id
-  FROM crdb_internal.transaction_contention_events AS c
-  LEFT JOIN crdb_internal.cluster_execution_insights AS i
+  FROM workload_test.transaction_contention_events AS c
+  LEFT JOIN workload_test.cluster_execution_insights AS i
     ON i.txn_fingerprint_id = c.waiting_txn_fingerprint_id
    AND i.stmt_fingerprint_id = c.waiting_stmt_fingerprint_id
   WHERE c.waiting_txn_id::STRING LIKE txn_id_prefix || '%'
@@ -324,10 +101,10 @@ BEGIN
   LIMIT 1;
 
   IF NOT EXISTS (
-      SELECT 1 FROM schedules.staging_failed_selection
+      SELECT 1 FROM workload_test.caller_failed_statement
       WHERE caller_id = in_caller_id
     ) THEN
-    INSERT INTO schedules.staging_failed_selection
+    INSERT INTO workload_test.caller_failed_statement
     SELECT
       in_caller_id,
       i.start_time::timestamptz AS collection_ts,
@@ -340,7 +117,7 @@ BEGIN
       NULL AS index_name,
       NULL AS contention_type,
       i.stmt_fingerprint_id
-    FROM crdb_internal.cluster_execution_insights AS i
+    FROM workload_test.cluster_execution_insights AS i
     WHERE i.txn_id::TEXT LIKE txn_id_prefix || '%'
       AND i.status = 'Failed'
       AND i.last_error_redactable LIKE '%' || retry_error_type || '%'
@@ -351,10 +128,10 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-      SELECT 1 FROM schedules.staging_failed_selection
+      SELECT 1 FROM workload_test.caller_failed_statement
       WHERE caller_id = in_caller_id
     ) THEN
-    INSERT INTO schedules.staging_failed_selection
+    INSERT INTO workload_test.caller_failed_statement
     SELECT
       in_caller_id,
       i.start_time::timestamptz AS collection_ts,
@@ -367,7 +144,7 @@ BEGIN
       NULL AS index_name,
       NULL AS contention_type,
       i.stmt_fingerprint_id
-    FROM crdb_internal.cluster_execution_insights AS i
+    FROM workload_test.cluster_execution_insights AS i
     WHERE i.txn_id::TEXT LIKE txn_id_prefix || '%'
       AND i.start_time BETWEEN conflict_ts - INTERVAL '30 seconds' AND conflict_ts + INTERVAL '30 seconds'
       AND (in_app_name IS NULL OR i.app_name = in_app_name)
@@ -376,10 +153,10 @@ BEGIN
     LIMIT 1;
   END IF;
 
-  DELETE FROM schedules.inspect_contention_results WHERE caller_id = in_caller_id;
+  DELETE FROM workload_test.caller_contention_results WHERE caller_id = in_caller_id;
 
   -- Now join with transaction stats and insert into final results table
-  INSERT INTO schedules.inspect_contention_results (
+  INSERT INTO workload_test.caller_contention_results (
     caller_id,
     ord,
     role,
@@ -428,8 +205,8 @@ BEGIN
     st.sampled_plan,
     st.aggregation_interval,
     st.index_recommendations
-  FROM schedules.test_run_transaction_statistics AS tx
-  JOIN schedules.staging_failed_selection AS f
+  FROM workload_test.transaction_statistics AS tx
+  JOIN workload_test.caller_failed_statement AS f
     ON tx.fingerprint_id IN (f.blocking_txn_fingerprint_id, f.waiting_txn_fingerprint_id)
    AND tx.aggregated_ts BETWEEN date_trunc('hour', f.collection_ts) AND date_trunc('hour', f.collection_ts) + INTERVAL '1 hour'
    AND (
@@ -448,15 +225,30 @@ BEGIN
     FROM jsonb_array_elements_text(tx.metadata->'stmtFingerprintIDs')
     WITH ORDINALITY AS arr(stmt_hex, ord)
   ) AS tx_stmt ON tx_stmt.fingerprint_id = tx.fingerprint_id
-  JOIN schedules.test_run_statement_statistics AS st
+  JOIN workload_test.statement_statistics AS st
     ON st.transaction_fingerprint_id = tx.fingerprint_id
    AND st.fingerprint_id = tx_stmt.stmt_fingerprint_id
    AND st.aggregated_ts = tx.aggregated_ts
    AND st.app_name = tx.app_name;
   
   select_query :=
-    'SELECT * ' ||
-    'FROM schedules.inspect_contention_results ' ||
+    'SELECT ' ||
+    '  collection_ts, ' ||
+    '  database_name, ' ||
+    '  schema_name, ' ||
+    '  table_name, ' ||
+    '  index_name, ' ||
+    '  contention_type, ' ||
+    '  app_name, ' ||
+    '  encode(transaction_fingerprint_id, ''hex'') AS txn_fingerprint_id, ' ||
+    '  role AS tnx_type, ' ||
+    '  contention, ' ||
+    '  encode(fingerprint_id, ''hex'') AS stmt_fingerprint_id, ' ||
+    '  stmt_metadata->''fullScan'' AS fullscan, ' ||
+    '  index_recommendations, ' ||
+    '  ord AS stmt_order, ' ||
+    '  stmt_metadata->''query'' AS sql_statement ' ||
+    'FROM workload_test.caller_contention_results ' ||
     'WHERE caller_id = ' || quote_literal(in_caller_id) || ' ' ||
     'ORDER BY ord;';
 END;

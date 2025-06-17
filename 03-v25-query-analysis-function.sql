@@ -20,7 +20,7 @@ WITH test AS (
     FROM schedules.test_run_transaction_statistics
 ),
 contention AS (
-    INSERT INTO schedules.test_run_contention_events (
+    INSERT INTO schedules.test_run_transaction_contention_events (
         test_run,
         collection_ts,
         blocking_txn_id,
@@ -60,7 +60,7 @@ contention AS (
     RETURNING 1 AS rows
 ),
 insights AS (
-    INSERT INTO schedules.test_run_execution_insights (
+    INSERT INTO schedules.test_run_cluster_execution_insights (
         test_run,
         session_id,
         txn_id,
@@ -257,7 +257,7 @@ contention AS (
     e.index_name,
     e.contention_type,
     e.waiting_stmt_fingerprint_id AS stmt_fingerprint_id
-  FROM schedules.test_run_contention_events AS e, params
+  FROM schedules.test_run_transaction_contention_events AS e, params
   WHERE e.waiting_txn_id::STRING LIKE params.txn_id_prefix || '%'
     AND e.contending_pretty_key = params.contention_key
     AND e.collection_ts BETWEEN params.conflict_ts AND params.conflict_ts + INTERVAL '60 seconds'
@@ -277,7 +277,7 @@ insights AS (
     NULL AS index_name,
     NULL AS contention_type,
     ci.stmt_fingerprint_id
-  FROM schedules.test_run_execution_insights AS ci, params
+  FROM schedules.test_run_cluster_execution_insights AS ci, params
   WHERE ci.txn_id::STRING LIKE params.txn_id_prefix || '%'
     AND ci.status = 'Failed'
     AND ci.last_error_redactable LIKE '%' || params.retry_error_type || '%'
@@ -325,7 +325,7 @@ failed AS (
     NULL AS index_name,
     NULL AS contention_type,
     stmt_fingerprint_id
-  FROM schedules.test_run_execution_insights, params
+  FROM schedules.test_run_cluster_execution_insights, params
   WHERE txn_id::STRING LIKE params.txn_id_prefix || '%'
 	AND start_time BETWEEN params.conflict_ts - INTERVAL '30 seconds' AND params.conflict_ts + INTERVAL '30 seconds'
 	AND (params.in_app_name IS NULL OR app_name = params.in_app_name)

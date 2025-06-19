@@ -4,6 +4,7 @@ USE schedules;
 CREATE TABLE IF NOT EXISTS workload_test.caller_contention_results (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   caller_id STRING DEFAULT gen_random_uuid()::STRING,  -- to isolate caller
+  test_run STRING NOT NULL,
   ord INT,
   role STRING,
   status STRING,
@@ -25,8 +26,12 @@ CREATE TABLE IF NOT EXISTS workload_test.caller_contention_results (
   stmt_statistics JSONB,
   sampled_plan JSONB,
   aggregation_interval INTERVAL,
-  index_recommendations STRING[]
-);
+  index_recommendations STRING[],
+  CONSTRAINT fk_ccr_to_trc FOREIGN KEY (test_run)
+      REFERENCES workload_test.test_run_configurations (test_run)
+  ON DELETE CASCADE
+)
+WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'90 days\')');
 
 
 CREATE TABLE IF NOT EXISTS workload_test.caller_failed_statement (
@@ -41,7 +46,8 @@ CREATE TABLE IF NOT EXISTS workload_test.caller_failed_statement (
   index_name TEXT,
   contention_type TEXT,
   stmt_fingerprint_id BYTES
-);
+)
+WITH (ttl = 'on', ttl_expiration_expression = e'(collection_ts + INTERVAL \'90 days\')');
 
 
 CREATE OR REPLACE PROCEDURE workload_test.inspect_contention_from_exception(
@@ -158,6 +164,7 @@ BEGIN
   -- Now join with transaction stats and insert into final results table
   INSERT INTO workload_test.caller_contention_results (
     caller_id,
+    test_run,
     ord,
     role,
     status,
@@ -182,7 +189,8 @@ BEGIN
     index_recommendations
   )
   SELECT
-    caller_id,
+    f.caller_id,
+    tx.test_run,
     tx_stmt.ord,
     CASE WHEN tx.fingerprint_id = f.blocking_txn_fingerprint_id THEN 'blocking' ELSE 'waiting' END AS role,
     CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN 'failed' ELSE NULL END AS status,
@@ -207,8 +215,9 @@ BEGIN
     st.index_recommendations
   FROM workload_test.transaction_statistics AS tx
   JOIN workload_test.caller_failed_statement AS f
-    ON tx.fingerprint_id IN (f.blocking_txn_fingerprint_id, f.waiting_txn_fingerprint_id)
-   AND tx.aggregated_ts BETWEEN date_trunc('hour', f.collection_ts) AND date_trunc('hour', f.collection_ts) + INTERVAL '1 hour'
+    ON f.caller_id = in_caller_id
+   AND tx.fingerprint_id IN (f.blocking_txn_fingerprint_id, f.waiting_txn_fingerprint_id)
+   AND tx.aggregated_ts = date_trunc('hour', f.collection_ts)
    AND (
      (tx.fingerprint_id = f.blocking_txn_fingerprint_id AND (
        (in_option = 'same_app' AND tx.app_name = f.app_name) OR
@@ -229,10 +238,12 @@ BEGIN
     ON st.transaction_fingerprint_id = tx.fingerprint_id
    AND st.fingerprint_id = tx_stmt.stmt_fingerprint_id
    AND st.aggregated_ts = tx.aggregated_ts
-   AND st.app_name = tx.app_name;
+   AND st.app_name = tx.app_name
+   AND st.test_run = tx.test_run;
   
   select_query :=
     'SELECT ' ||
+    '  test_run, ' ||
     '  collection_ts, ' ||
     '  database_name, ' ||
     '  schema_name, ' ||
@@ -247,9 +258,10 @@ BEGIN
     '  stmt_metadata->''fullScan'' AS fullscan, ' ||
     '  index_recommendations, ' ||
     '  ord AS stmt_order, ' ||
+    '  status, ' ||
     '  stmt_metadata->''query'' AS sql_statement ' ||
     'FROM workload_test.caller_contention_results ' ||
     'WHERE caller_id = ' || quote_literal(in_caller_id) || ' ' ||
-    'ORDER BY ord;';
+    'ORDER BY test_run, encode(transaction_fingerprint_id, ''hex''), ord;';
 END;
 $$;

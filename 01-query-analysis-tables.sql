@@ -18,9 +18,11 @@ CREATE TABLE workload_test.test_run_configurations (
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ NOT NULL,
 	last_copy_time TIMESTAMPTZ,
+	last_agg_copy_time TIMESTAMPTZ,
     CONSTRAINT uq_test_run_config UNIQUE (test_run),
-    INDEX idx_test_run_times (start_time, end_time) STORING (test_run, database_name, last_copy_time)
-);
+    INDEX idx_test_run_times (start_time, end_time) STORING (test_run, database_name, last_copy_time, last_agg_copy_time)
+)
+WITH (ttl = 'on', ttl_expiration_expression = e'(end_time + INTERVAL \'90 days\')');
 
 
 -- crdb_internal.transaction_contention_events
@@ -126,7 +128,7 @@ CREATE TABLE workload_test.statement_statistics (
     CONSTRAINT fk_trss_to_trc FOREIGN KEY (test_run)
         REFERENCES workload_test.test_run_configurations (test_run)
 		ON DELETE CASCADE,
-    CONSTRAINT uq_stmt_stats UNIQUE (test_run, aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name),
+    CONSTRAINT uq_stmt_stats UNIQUE (test_run, aggregated_ts, fingerprint_id, transaction_fingerprint_id, plan_hash, app_name),
     INDEX idx_trss_by_test_run (test_run)
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'90 days\')');

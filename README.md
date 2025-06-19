@@ -117,7 +117,7 @@ We can create workloads to test a variety of scenarios, including implicit and e
 We'll store this information as variables in the terminal shell window. On Mac variables are assigned like ```my_var="example"``` and on Windows we proceed the variable assignment with a $ symbol ```$my_var="example"```.
 ```
 conn_str="postgresql://root@localhost:26257/schedules?sslmode=disable"
-num_connections=4
+num_connections=16
 duration=60
 schedule_freq=10
 status_freq=90
@@ -125,7 +125,7 @@ inventory_freq=75
 price_freq=25
 contention_freq=10
 batch_size=16
-delay=100
+delay=10
 ```
 
 Before we run the test, let's insert a record into our test run configurations table to record observations for the next hour
@@ -137,7 +137,7 @@ INSERT INTO workload_test.test_run_configurations (
   start_time,
   end_time
 ) VALUES (
-  'load_test_2025_06_15',            -- your test_run name
+  'load_test_2025_06_18',            -- your test_run name
   'schedules',                       -- the database you’re targeting
   NOW(),                             -- when the test started
   NOW() + INTERVAL '1 hour'          -- when it ends
@@ -161,21 +161,21 @@ dbworkload run -w transactions.py -c $num_connections -d $(( ${duration} * 60 ))
 When the workload completes it will print out a summary of percentile latencies for each transaction.
 ```
 -------------  ----------------------------
-run_name       Transactions.20250615_170934
-start_time     2025-06-15 17:09:34
-end_time       2025-06-15 18:09:34
-test_duration  3600
+run_name       Transactions.20250619_012455
+start_time     2025-06-19 01:24:55
+end_time       2025-06-19 02:24:57
+test_duration  3602
 -------------  ----------------------------
 
 ┌───────────┬────────────┬───────────┬───────────┬─────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
 │   elapsed │ id         │   threads │   tot_ops │   tot_ops/s │   mean(ms) │   p50(ms) │   p90(ms) │   p95(ms) │   p99(ms) │   max(ms) │
 ├───────────┼────────────┼───────────┼───────────┼─────────────┼────────────┼───────────┼───────────┼───────────┼───────────┼───────────┤
-│     3,600 │ __cycle__  │         4 │    17,323 │           4 │     831.07 │    814.73 │  1,227.23 │  1,259.62 │  1,621.63 │  3,196.43 │
-│     3,600 │ contention │         4 │    17,323 │           4 │      14.13 │      0.00 │     58.45 │    143.14 │    161.07 │    176.84 │
-│     3,600 │ inventory  │         4 │    17,323 │           4 │     306.37 │    403.15 │    415.19 │    422.13 │    450.83 │  1,372.94 │
-│     3,600 │ price      │         4 │    17,323 │           4 │     103.87 │      0.01 │    405.98 │    410.74 │    428.88 │    934.72 │
-│     3,600 │ schedule   │         4 │    17,323 │           4 │      39.30 │      0.00 │    190.22 │    406.04 │    418.13 │  1,079.71 │
-│     3,600 │ status     │         4 │    17,323 │           4 │     367.39 │    404.59 │    416.22 │    423.83 │    452.59 │  1,344.18 │
+│     3,602 │ __cycle__  │        16 │    43,000 │          11 │   1,338.95 │  1,326.15 │  2,023.24 │  2,135.07 │  2,660.49 │  4,448.02 │
+│     3,602 │ contention │        16 │    43,000 │          11 │       7.07 │      0.00 │     30.23 │     68.95 │     91.20 │    403.01 │
+│     3,602 │ inventory  │        16 │    43,000 │          11 │     498.48 │    629.15 │    735.37 │    770.45 │    848.55 │  2,699.09 │
+│     3,602 │ price      │        16 │    43,000 │          11 │     166.03 │      0.01 │    672.53 │    715.39 │    798.01 │  2,778.22 │
+│     3,602 │ schedule   │        16 │    43,000 │          11 │      68.00 │      0.01 │    309.03 │    665.77 │    760.33 │  2,029.83 │
+│     3,602 │ status     │        16 │    43,000 │          11 │     599.36 │    646.98 │    746.58 │    780.90 │    859.79 │  2,504.82 │
 └───────────┴────────────┴───────────┴───────────┴─────────────┴────────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
 ```
 
@@ -192,15 +192,10 @@ SELECT workload_test.copy_test_run_observations();
   {"contention": 81, "insights": 6317, "statements": 894, "transactions": 470}
 ```
 
-And then, for example, we can grab any exception in the workload's log output to investigate statements related to the failed transaction.
+And then, as an example, we can grab any exception in the workload's log output to investigate statements related to a failed transaction.
 ```
-error_str_1=$(cat <<EOF
-Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 at timestamp 1750013670.819414000,0 too old; must write at or above 1750013670.819414000,2: "sql txn" meta={id=0779ed1d key=/Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 iso=Serializable pri=0.02016719 epo=0 ts=1750013670.819414000,2 min=1750013670.819414000,0 seq=1} lock=true stat=PENDING rts=1750013670.819414000,0 wto=false gul=1750013671.319414000,0
-EOF
-)
-
-error_str_2=$(cat <<EOF
-Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 at timestamp 1750013680.022981000,0 too old; must write at or above 1750013680.022981000,2: "sql txn" meta={id=d0da9768 key=/Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 iso=Serializable pri=0.00716173 epo=0 ts=1750013680.022981000,2 min=1750013680.022981000,0 seq=1} lock=true stat=PENDING rts=1750013680.022981000,0 wto=false gul=1750013680.522981000,0
+error_str=$(cat <<EOF
+Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 at timestamp 1750299870.665242000,0 too old; must write at or above 1750299870.665242000,2: "sql txn" meta={id=f50e63f3 key=/Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 iso=Serializable pri=0.00809748 epo=0 ts=1750299870.665242000,2 min=1750299870.665242000,0 seq=1} lock=true stat=PENDING rts=1750299870.665242000,0 wto=false gul=1750299871.165242000,0
 EOF
 )
 ```
@@ -209,9 +204,9 @@ and either v24
 ```
 cockroach sql --url "$conn_str" -e """
 CALL workload_test.inspect_contention_from_exception(
-  '$$(echo "$error_str_2")$$',
+  '$$(echo "$error_str")$$',
   NULL,              -- out select_query
-  'test-caller-2',   -- in caller_id
+  'test-caller-1',   -- in caller_id
   'Transactions',    -- in app_name
   'public',          -- in schema_name
   'same_app'         -- in contention option
@@ -219,39 +214,28 @@ CALL workload_test.inspect_contention_from_exception(
 """
 
 cockroach sql --url "$conn_str" -e """
-SELECT   collection_ts,   database_name,   schema_name,   table_name,   index_name,   contention_type,   app_name,   encode(transaction_fingerprint_id, 'hex') AS txn_fingerprint_id,   role AS tnx_type,   contention,   encode(fingerprint_id, 'hex') AS stmt_fingerprint_id,   stmt_metadata->'fullScan' AS fullscan,   index_recommendations,   ord AS stmt_order,   stmt_metadata->'query' AS sql_statement FROM workload_test.caller_contention_results WHERE caller_id = 'test-caller-2' ORDER BY ord;
+SELECT   test_run,   collection_ts,   database_name,   schema_name,   table_name,   index_name,   contention_type,   app_name,   encode(transaction_fingerprint_id, 'hex') AS txn_fingerprint_id,   role AS tnx_type,   contention,   encode(fingerprint_id, 'hex') AS stmt_fingerprint_id,   stmt_metadata->'fullScan' AS fullscan,   index_recommendations,   ord AS stmt_order,   status,   stmt_metadata->'query' AS sql_statement FROM workload_test.caller_contention_results WHERE caller_id = 'test-caller-1' ORDER BY test_run, encode(transaction_fingerprint_id, 'hex'), ord;
 """
 
-          collection_ts         | database_name | schema_name | table_name | index_name | contention_type |   app_name   | txn_fingerprint_id | tnx_type | contention | stmt_fingerprint_id | fullscan |                                                                                            index_recommendations                                                                                            | stmt_order |                  sql_statement
---------------------------------+---------------+-------------+------------+------------+-----------------+--------------+--------------------+----------+------------+---------------------+----------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------+---------------------------------------------------
-  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          1 | "SELECT * FROM airports WHERE city = _"
-  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          1 | "SELECT * FROM airports WHERE city = _"
-  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          1 | "SELECT * FROM airports WHERE city = _"
-  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          1 | "SELECT * FROM airports WHERE city = _"
-  NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          1 | "SELECT * FROM airports WHERE city = _"
-  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          2 | "UPDATE airports SET country = _ WHERE city = _"
-  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | "UPDATE airports SET country = _ WHERE city = _"
-  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | "UPDATE airports SET country = _ WHERE city = _"
-  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}                                                                                                      |          2 | "UPDATE airports SET country = _ WHERE city = _"
-  2025-06-15 18:54:40.069048+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);","creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | "UPDATE airports SET country = _ WHERE city = _"
+        test_run       |         collection_ts         | database_name | schema_name | table_name | index_name | contention_type |   app_name   | txn_fingerprint_id | tnx_type | contention | stmt_fingerprint_id | fullscan |                                         index_recommendations                                          | stmt_order | status |                  sql_statement
+-----------------------+-------------------------------+---------------+-------------+------------+------------+-----------------+--------------+--------------------+----------+------------+---------------------+----------+--------------------------------------------------------------------------------------------------------+------------+--------+---------------------------------------------------
+  load_test_2025_06_18 | NULL                          | NULL          | NULL        | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 2ab0c15b7b14e792    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          1 | NULL   | "SELECT * FROM airports WHERE city = _"
+  load_test_2025_06_18 | 2025-06-19 02:24:30.687285+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | failed | "UPDATE airports SET country = _ WHERE city = _"
 ```
 
 or v25 script
 ```
 cockroach sql --url "$conn_str" -e """
 SELECT * 
-FROM inspect_contention_from_exception(
-  '$$(echo "$v25_error_str_3")$$',
-  'Transactions',    -- app_name
-  'schedules',       -- schema_name
-  'same_app'         -- contention option
+FROM workload_test.inspect_contention_from_exception(
+  '$$(echo "$error_str")$$',
+  'Transactions',    -- in app_name
+  'public',          -- in schema_name
+  'same_app'         -- in contention option
 );
 """
 
-  ord |  role   | status |         collection_ts         |     aggregated_ts      |   app_name   | database_name | schema_name | table_name | index_name |                           txn_metadata                           |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             txn_statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | contention_type | contention |   fingerprint_id   | transaction_fingerprint_id |     plan_hash      |                                                                                                                 stmt_metadata                                                                                                                  |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                stmt_statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |         sampled_plan         | aggregation_interval |                                         index_recommendations
-------+---------+--------+-------------------------------+------------------------+--------------+---------------+-------------+------------+------------+------------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------------+------------+--------------------+----------------------------+--------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------+----------------------+---------------------------------------------------------------------------------------------------------
-    1 | waiting | NULL   | NULL                          | 2025-05-29 21:00:00+00 | Transactions | NULL          | NULL        | NULL       | NULL       | {"stmtFingerprintIDs": ["2ab0c15b7b14e792", "67a10dfb99638ead"]} | {"execution_statistics": {"cnt": 5, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 646398.6, "sqDiff": 11524737185.2}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 4.096E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 260618, "sqDiff": 8011623920.000001}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 94, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 2, "sqDiff": 0}, "seekCountInternal": {"mean": 2, "sqDiff": 0}, "stepCount": {"mean": 7E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 94, "sqDiff": 0}, "valueBytes": {"mean": 1996, "sqDiff": 0}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "statistics": {"bytesRead": {"mean": 3274.135363790186, "sqDiff": 629.1708967851387}, "cnt": 591, "commitLat": {"mean": 0.00558303270219966, "sqDiff": 0.0014154193429448854}, "idleLat": {"mean": 0.034576343846023684, "sqDiff": 0.11486110703191013}, "maxRetries": 0, "numRows": {"mean": 1.9796954314720812, "sqDiff": 11.756345177664977}, "retryLat": {"mean": 0, "sqDiff": 0}, "rowsRead": {"mean": 4E+1, "sqDiff": 0}, "rowsWritten": {"mean": 1, "sqDiff": 0}, "svcLat": {"mean": 0.04113040387986464, "sqDiff": 0.0901331795568695}}} | NULL            |     f      | \x2ab0c15b7b14e792 | \x1c0d24389254fc7a         | \x025144e18ceb2338 | {"db": "schedules", "distsql": false, "fullScan": true, "implicitTxn": false, "query": "SELECT * FROM airports WHERE city = _", "querySummary": "SELECT * FROM airports", "stmtType": "TypeDML", "vec": true}                                  | {"execution_statistics": {"cnt": 8, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 14441.75, "sqDiff": 53578727.5}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 2.048E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 126856.75, "sqDiff": 10685503205.500002}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 47, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 1, "sqDiff": 0}, "seekCountInternal": {"mean": 1, "sqDiff": 0}, "stepCount": {"mean": 35, "sqDiff": 0}, "stepCountInternal": {"mean": 47, "sqDiff": 0}, "valueBytes": {"mean": 997.75, "sqDiff": 3.4999999999999662}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "index_recommendations": ["creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"], "statistics": {"bytesRead": {"mean": 1637.067681895093, "sqDiff": 157.29272419628467}, "cnt": 591, "failureCount": 0, "firstAttemptCnt": 591, "genericCount": 591, "idleLat": {"mean": 0.00020908501861252127, "sqDiff": 0.000006089591580494795}, "indexes": ["156@1"], "kvNodeIds": [1], "lastErrorCode": "", "lastExecAt": "2025-05-29T21:12:58.000765Z", "latencyInfo": {"max": 0.013574292, "min": 0.000432208}, "maxRetries": 0, "nodes": [1], "numRows": {"mean": 1, "sqDiff": 0}, "ovhLat": {"mean": 0.0000024722064297800332, "sqDiff": 2.92632892815572E-10}, "parseLat": {"mean": 0.000002392832487309645, "sqDiff": 4.1806406002416235E-8}, "planGists": ["AgG4AgIAHwAAAAMGCg=="], "planLat": {"mean": 0.00005162517597292724, "sqDiff": 6.899717806916985E-7}, "regions": [], "rowsRead": {"mean": 2E+1, "sqDiff": 0}, "rowsWritten": {"mean": 0, "sqDiff": 0}, "runLat": {"mean": 0.0006652432673434853, "sqDiff": 0.00019420337721665374}, "sqlType": "TypeDML", "svcLat": {"mean": 0.0007217334822335027, "sqDiff": 0.00019573682877965754}, "usedFollowerRead": false}}                                              | {"Children": [], "Name": ""} | 01:00:00             | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}
-    2 | waiting | failed | 2025-05-29 21:12:23.728207+00 | 2025-05-29 21:00:00+00 | Transactions | schedules     | schedules   | NULL       | NULL       | {"stmtFingerprintIDs": ["2ab0c15b7b14e792", "67a10dfb99638ead"]} | {"execution_statistics": {"cnt": 5, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 646398.6, "sqDiff": 11524737185.2}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 4.096E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 260618, "sqDiff": 8011623920.000001}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 94, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 2, "sqDiff": 0}, "seekCountInternal": {"mean": 2, "sqDiff": 0}, "stepCount": {"mean": 7E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 94, "sqDiff": 0}, "valueBytes": {"mean": 1996, "sqDiff": 0}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "statistics": {"bytesRead": {"mean": 3274.135363790186, "sqDiff": 629.1708967851387}, "cnt": 591, "commitLat": {"mean": 0.00558303270219966, "sqDiff": 0.0014154193429448854}, "idleLat": {"mean": 0.034576343846023684, "sqDiff": 0.11486110703191013}, "maxRetries": 0, "numRows": {"mean": 1.9796954314720812, "sqDiff": 11.756345177664977}, "retryLat": {"mean": 0, "sqDiff": 0}, "rowsRead": {"mean": 4E+1, "sqDiff": 0}, "rowsWritten": {"mean": 1, "sqDiff": 0}, "svcLat": {"mean": 0.04113040387986464, "sqDiff": 0.0901331795568695}}} | NULL            |     f      | \x67a10dfb99638ead | \x1c0d24389254fc7a         | \xfc4bcd4933e6c787 | {"db": "schedules", "distsql": false, "fullScan": true, "implicitTxn": false, "query": "UPDATE airports SET country = _ WHERE city = _", "querySummary": "UPDATE airports SET country = _ WHERE city = _", "stmtType": "TypeDML", "vec": true} | {"execution_statistics": {"cnt": 8, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 627036.5, "sqDiff": 13925259104.000004}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 4.096E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 135552.75, "sqDiff": 3827385413.4999995}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 47, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 1, "sqDiff": 0}, "seekCountInternal": {"mean": 1, "sqDiff": 0}, "stepCount": {"mean": 35, "sqDiff": 0}, "stepCountInternal": {"mean": 47, "sqDiff": 0}, "valueBytes": {"mean": 997.75, "sqDiff": 3.4999999999999662}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "index_recommendations": ["creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"], "statistics": {"bytesRead": {"mean": 1637.067681895093, "sqDiff": 157.29272419628467}, "cnt": 591, "failureCount": 12, "firstAttemptCnt": 591, "genericCount": 591, "idleLat": {"mean": 0.03338678630626059, "sqDiff": 0.08815937714916616}, "indexes": ["156@1"], "kvNodeIds": [1], "lastErrorCode": "40001", "lastExecAt": "2025-05-29T21:12:58.000766Z", "latencyInfo": {"max": 0.052318125, "min": 0.00124225}, "maxRetries": 0, "nodes": [1], "numRows": {"mean": 0.9796954314720814, "sqDiff": 11.756345177664974}, "ovhLat": {"mean": 9.375414551607434E-7, "sqDiff": 3.4045222734348087E-11}, "parseLat": {"mean": 0.000003023688663282572, "sqDiff": 9.600118117271408E-8}, "planGists": ["AgG4AgIAHwAAAAMHDAUMIbgCAAA="], "planLat": {"mean": 0.00006055089678510999, "sqDiff": 0.0000022335368318887038}, "regions": [], "rowsRead": {"mean": 2E+1, "sqDiff": 0}, "rowsWritten": {"mean": 1, "sqDiff": 0}, "runLat": {"mean": 0.0016792890219966157, "sqDiff": 0.002866743281233353}, "sqlType": "TypeDML", "svcLat": {"mean": 0.0017438011489001686, "sqDiff": 0.002876205037837565}, "usedFollowerRead": false}} | {"Children": [], "Name": ""} | 01:00:00             | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}
+...tbd...
 ```
 
 ## Slow Performers
@@ -260,8 +244,8 @@ Now we can query the observability metrics for our last run to look for failures
 cockroach sql --url "$conn_str" -e """
 SELECT MAX(ROUND(CAST(statistics->'statistics'->'runLat'->'mean' AS FLOAT) * 1000, 2)) AS avg_ms,
        metadata->'query' AS QUERY
-FROM test_run_statement_statistics
-WHERE test_run = 20250330
+FROM workload_test.statement_statistics
+WHERE test_run = 'load_test_2025_06_18'
   AND app_name = 'Transactions'
 GROUP BY 2
 ORDER BY 1 DESC
@@ -270,11 +254,11 @@ LIMIT 5;
 
   avg_ms |                                                                                                                                                                            query
 ---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  266.92 | "SELECT flight_id FROM flights AS OF SYSTEM TIME follower_read_timestamp() ORDER BY random() LIMIT _"
-   26.39 | "UPDATE flight_status SET status = (ARRAY[_, __more__])[_ + floor(random() * _)::INT8], updated_at = now() WHERE flight_id IN (_, __more__)"
-   26.07 | "UPDATE seat_inventory SET seats_available = (seats_available::FLOAT8 * (_ + ((random() - _) / _)))::INT8, updated_at = now() WHERE flight_id IN (_, __more__)"
-   25.36 | "UPDATE flight_prices SET price_usd = price_usd * (_ + ((random() - _) / _))::DECIMAL, updated_at = now() WHERE flight_id IN (_, __more__)"
-    18.2 | "UPDATE flights SET scheduled_departure = scheduled_departure + (((CASE WHEN random() < _ THEN _ ELSE _ END) * (floor(random() * _) + _)::INT8) * _::INTERVAL), scheduled_arrival = scheduled_arrival + (((CASE WHEN random() < _ THEN _ ELSE _ END) * (floor(random() * _) + _)::INT8) * _::INTERVAL), updated_at = now() WHERE flight_id IN (_, __more__)"
+  636.42 | "SELECT flight_id FROM flights AS OF SYSTEM TIME follower_read_timestamp() ORDER BY random() LIMIT _"
+   22.43 | "UPDATE flights SET scheduled_departure = scheduled_departure + (((CASE WHEN random() < _ THEN _ ELSE _ END) * (floor(random() * _) + _)::INT8) * _::INTERVAL), scheduled_arrival = scheduled_arrival + (((CASE WHEN random() < _ THEN _ ELSE _ END) * (floor(random() * _) + _)::INT8) * _::INTERVAL), updated_at = now() WHERE flight_id IN (_, __more__)"
+   13.66 | "UPDATE flight_prices SET price_usd = price_usd * (_ + ((random() - _) / _))::DECIMAL, updated_at = now() WHERE flight_id IN (_, __more__)"
+   13.48 | "UPDATE seat_inventory SET seats_available = (seats_available::FLOAT8 * (_ + ((random() - _) / _)))::INT8, updated_at = now() WHERE flight_id IN (_, __more__)"
+   12.89 | "UPDATE flight_status SET status = (ARRAY[_, __more__])[_ + floor(random() * _)::INT8], updated_at = now() WHERE flight_id IN (_, __more__)"
 ```
 
 We want to address our slowest running query, although this is a bad example because we're doing a full scan to get a random batch of flights from the table.  But let's run an explain plan to see how the optimizer will execute this query.
@@ -288,55 +272,53 @@ ORDER BY random()
 LIMIT 16;
 """
 
-                                                                          info
---------------------------------------------------------------------------------------------------------------------------------------------------------
-
-  planning time: 448µs
-  execution time: 359ms
-  distribution: local
+                                                                 info
+---------------------------------------------------------------------------------------------------------------------------------------
+  planning time: 401µs
+  execution time: 375ms
+  distribution: full
   vectorized: true
   plan type: custom
-  rows decoded from KV: 1,000,000 (144 MiB, 15 gRPC calls)
-  cumulative time spent in KV: 345ms
+  rows decoded from KV: 1,000,000 (143 MiB, 15 gRPC calls)
+  cumulative time spent in KV: 370ms
   maximum memory usage: 10 MiB
-  DistSQL network usage: 0 B (0 messages)
+  network usage: 0 B (0 messages)
   sql cpu time: 101ms
   isolation level: serializable
   priority: normal
   quality of service: regular
-  historical: AS OF SYSTEM TIME 2025-05-30 00:26:16.292396
 
   • top-k
-  │ sql nodes: n1
+  │ nodes: n1
   │ actual row count: 16
-  │ execution time: 14ms
   │ estimated max memory allocated: 10 KiB
-  │ sql cpu time: 14ms
+  │ estimated max sql temp disk usage: 0 B
+  │ sql cpu time: 5ms
   │ estimated row count: 16
-  │ order: +column13
+  │ order: +column11
   │ k: 16
   │
   └── • render
       │
       └── • scan
-            sql nodes: n1
-            kv nodes: n1
+            nodes: n1
             actual row count: 1,000,000
-            KV time: 345ms
+            KV time: 370ms
+            KV contention time: 0µs
             KV rows decoded: 1,000,000
-            KV bytes read: 144 MiB
+            KV bytes read: 143 MiB
             KV gRPC calls: 15
             estimated max memory allocated: 10 MiB
-            sql cpu time: 87ms
-            estimated row count: 1,000,001 (100% of the table; stats collected 4 hours ago; using stats forecast for 2 days in the future)
+            sql cpu time: 95ms
+            estimated row count: 1,000,000 (100% of the table; stats collected 19 hours ago; using stats forecast for 45 minutes ago)
             table: flights@flights_pkey
             spans: FULL SCAN
-(40 rows)
+(39 rows)
 
-Time: 361ms
+Time: 378ms
 ```
 
-There's not an index that will help with this use case.  So our objective would be to find another strategy to get similar results without a full table scan.  Below uses a random offset based on a slice of the overall table data, rather than pulling a million records from disk.  Same outcome, but only needs to decode ~20k records in about 7% of the execution time.
+There's not an index that will help with this use case.  So our objective would be to find another strategy to get similar results without a full table scan.  Below uses a random offset based on a slice of the overall table data, rather than pulling a million records from disk.  Same outcome, but only needs to decode ~10k records in about 4% of the execution time.
 ```
 -- confirm the record count for flights
 cockroach sql --url "$conn_str" -e """
@@ -366,20 +348,19 @@ LIMIT 16;
 
                                                                           info
 --------------------------------------------------------------------------------------------------------------------------------------------------------
-  planning time: 556µs
-  execution time: 25ms
-  distribution: local
+  planning time: 192µs
+  execution time: 14ms
+  distribution: full
   vectorized: true
-  plan type: custom
-  rows decoded from KV: 20,488 (2.9 MiB, 1 gRPC calls)
-  cumulative time spent in KV: 6ms
-  maximum memory usage: 3.0 MiB
-  DistSQL network usage: 0 B (0 messages)
-  sql cpu time: 2ms
+  plan type: generic, reused
+  rows decoded from KV: 10,235 (1.5 MiB, 1 gRPC calls)
+  cumulative time spent in KV: 3ms
+  maximum memory usage: 1.5 MiB
+  network usage: 0 B (0 messages)
+  sql cpu time: 931µs
   isolation level: serializable
   priority: normal
   quality of service: regular
-  historical: AS OF SYSTEM TIME 2025-05-30 01:00:55.571558
 
   • root
   │
@@ -390,16 +371,16 @@ LIMIT 16;
   │       │ offset: floor(random() * @S1)::INT8
   │       │
   │       └── • scan
-  │             sql nodes: n1
-  │             kv nodes: n1
+  │             nodes: n1
   │             actual row count: 16
-  │             KV time: 6ms
-  │             KV rows decoded: 20,488
-  │             KV bytes read: 2.9 MiB
+  │             KV time: 3ms
+  │             KV contention time: 0µs
+  │             KV rows decoded: 10,235
+  │             KV bytes read: 1.5 MiB
   │             KV gRPC calls: 1
-  │             estimated max memory allocated: 3.0 MiB
-  │             sql cpu time: 1ms
-  │             estimated row count: 1,000,000 (100% of the table; stats collected 15 minutes ago)
+  │             estimated max memory allocated: 1.5 MiB
+  │             sql cpu time: 681µs
+  │             estimated row count: 1,000,000 (100% of the table; stats collected 19 hours ago; using stats forecast for 47 minutes ago)
   │             table: flights@flights_pkey  ----------------------  WARNING: the row count estimate is inaccurate, consider running 'ANALYZE flights'
   │             spans: FULL SCAN
   │
@@ -409,31 +390,29 @@ LIMIT 16;
       │ exec mode: one row
       │
       └── • max1row
-          │ sql nodes: n1
+          │ nodes: n1
           │ actual row count: 1
-          │ execution time: 58µs
-          │ sql cpu time: 58µs
+          │ sql cpu time: 33µs
           │ estimated row count: 1
           │
           └── • render
               │
               └── • filter
-                  │ sql nodes: n1
+                  │ nodes: n1
                   │ actual row count: 1
-                  │ execution time: 21µs
-                  │ sql cpu time: 20µs
+                  │ sql cpu time: 24µs
                   │ filter: table_name = 'flights'
                   │
                   └── • virtual table
-                        sql nodes: n1
-                        actual row count: 341
-                        execution time: 18ms
-                        sql cpu time: 184µs
+                        nodes: n1
+                        actual row count: 335
+                        sql cpu time: 194µs
                         table: table_row_statistics@primary
 
-(66 rows)
+  WARNING: the row count estimate on table "flights" is inaccurate, consider running 'ANALYZE flights'
+(62 rows)
 
-Time: 26ms
+Time: 15ms
 ```
 
 

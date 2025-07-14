@@ -322,8 +322,8 @@ BEGIN
         ) AS src
         WHERE
           -- only update the “placeholder” rows
-          tgt.blocking_txn_fingerprint_id = '\x0000000000000000'::BYTES
-          AND tgt.waiting_txn_fingerprint_id = '\x0000000000000000'::BYTES
+          (tgt.blocking_txn_fingerprint_id = '\x0000000000000000'::BYTES
+          OR tgt.waiting_txn_fingerprint_id = '\x0000000000000000'::BYTES)
 
           -- join back to the same event
           AND tgt.blocking_txn_id = src.blocking_txn_id

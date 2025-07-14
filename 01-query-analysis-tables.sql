@@ -51,6 +51,15 @@ CREATE TABLE workload_test.transaction_contention_events (
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(collection_ts + INTERVAL \'90 days\')');
 
+CREATE INDEX ON workload_test.transaction_contention_events (
+  collection_ts,
+  blocking_txn_id,
+  waiting_txn_id
+) STORING (
+  blocking_txn_fingerprint_id,
+  waiting_txn_fingerprint_id
+);
+
 
 -- crdb_internal.cluster_execution_insights
 CREATE TABLE workload_test.cluster_execution_insights (

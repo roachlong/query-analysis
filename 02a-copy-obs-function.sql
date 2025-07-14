@@ -107,6 +107,9 @@ BEGIN
         AND e.collection_ts >= from_ts
         AND e.collection_ts < to_ts;
 
+      RAISE NOTICE 'Copied transaction_contention_events: test_name=%, test_db=%, from_ts=%, to_ts=%',
+        test_name, test_db, from_ts, to_ts;
+
       -- 4) insert cluster execution insights
       INSERT INTO workload_test.cluster_execution_insights (
         test_run,
@@ -173,6 +176,9 @@ BEGIN
       WHERE i.database_name = test_db
         AND i.start_time >= from_ts
         AND i.start_time < to_ts;
+
+      RAISE NOTICE 'Copied cluster_execution_insights: test_name=%, test_db=%, from_ts=%, to_ts=%',
+        test_name, test_db, from_ts, to_ts;
 
       -- 5) advance last_copy_time so we don’t double-copy next run
       UPDATE workload_test.test_run_configurations
@@ -250,6 +256,9 @@ BEGIN
           sampled_plan = EXCLUDED.sampled_plan,
           index_recommendations = EXCLUDED.index_recommendations;
 
+        RAISE NOTICE 'Copied statement_statistics: test_name=%, test_db=%, from_ts=%, to_ts=%',
+          test_name, test_db, from_ts, to_ts;
+
         -- 8) insert transaction stats
         INSERT INTO workload_test.transaction_statistics (
           test_run,
@@ -276,6 +285,9 @@ BEGIN
           metadata = EXCLUDED.metadata,
           statistics = EXCLUDED.statistics;
 
+        RAISE NOTICE 'Copied transaction_statistics: test_name=%, test_db=%, from_ts=%, to_ts=%',
+          test_name, test_db, from_ts, to_ts;
+
         -- 9) advance last_agg_copy_time so we don’t double-copy next run
         UPDATE workload_test.test_run_configurations
         SET last_agg_copy_time = to_ts
@@ -293,11 +305,47 @@ BEGIN
         WHERE test_run = test_name
           AND aggregated_ts >= from_ts
           AND aggregated_ts < to_ts;
+        
+        -- 11) then update plaeholder values for blocking and waiting transaction fingerprint ids
+        UPDATE workload_test.transaction_contention_events AS tgt
+        SET
+          blocking_txn_fingerprint_id = src.blocking_txn_fingerprint_id,
+          waiting_txn_fingerprint_id = src.waiting_txn_fingerprint_id
+        FROM (
+          SELECT
+            blocking_txn_id,
+            waiting_txn_id,
+            collection_ts,
+            blocking_txn_fingerprint_id,
+            waiting_txn_fingerprint_id
+          FROM crdb_internal.transaction_contention_events
+        ) AS src
+        WHERE
+          -- only update the “placeholder” rows
+          tgt.blocking_txn_fingerprint_id = '\x0000000000000000'::BYTES
+          AND tgt.waiting_txn_fingerprint_id = '\x0000000000000000'::BYTES
+
+          -- join back to the same event
+          AND tgt.blocking_txn_id = src.blocking_txn_id
+          AND tgt.waiting_txn_id = src.waiting_txn_id
+          AND tgt.collection_ts  = src.collection_ts
+
+          -- but only when the source has been filled in
+          AND src.blocking_txn_fingerprint_id != '\x0000000000000000'::BYTES
+          AND src.waiting_txn_fingerprint_id != '\x0000000000000000'::BYTES
+
+          -- limited to recent events for the current test run
+          AND tgt.test_run = test_name
+          AND tgt.collection_ts >= now() - INTERVAL '2 hours'
+        ;
+
+        RAISE NOTICE 'Updated transaction_contention_events: test_name=%, test_db=%, from_ts=%, to_ts=%',
+          test_name, test_db, from_ts, to_ts;
       
       END IF;
     END IF;
     
-    -- 11) collect this run’s counts into our JSONB array
+    -- 12) collect this run’s counts into our JSONB array
     results := results || jsonb_build_array(
       jsonb_build_object(
         'test_run',      test_name,

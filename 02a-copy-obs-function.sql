@@ -59,7 +59,7 @@ BEGIN
     test_name := test_runs[i];
     test_db   := test_dbs[i];
     from_ts   := coalesce(last_times[i], start_times[i]);
-    to_ts     := LEAST(now(), end_times[i]);
+    to_ts     := LEAST(now(), end_times[i]) + INTERVAL '10 minutes';
 
     -- FIRST WE'LL CHECK FOR NON-AGGREGATED OBSERVABILITY METRICS
     IF from_ts < to_ts THEN
@@ -175,7 +175,9 @@ BEGIN
       FROM crdb_internal.cluster_execution_insights AS i
       WHERE i.database_name = test_db
         AND i.start_time >= from_ts
-        AND i.start_time < to_ts;
+        AND i.start_time < to_ts
+      ON CONFLICT (test_run, txn_fingerprint_id, stmt_fingerprint_id)
+      DO NOTHING;
 
       RAISE NOTICE 'Copied cluster_execution_insights: test_name=%, test_db=%, from_ts=%, to_ts=%',
         test_name, test_db, from_ts, to_ts;
@@ -322,17 +324,18 @@ BEGIN
         ) AS src
         WHERE
           -- only update the “placeholder” rows
-          (tgt.blocking_txn_fingerprint_id = '\x0000000000000000'::BYTES
-          OR tgt.waiting_txn_fingerprint_id = '\x0000000000000000'::BYTES)
+          -- but only when the source has been filled in
+          ((tgt.blocking_txn_fingerprint_id = '\x0000000000000000'::BYTES
+          AND src.blocking_txn_fingerprint_id != '\x0000000000000000'::BYTES)
+          OR
+          (tgt.waiting_txn_fingerprint_id = '\x0000000000000000'::BYTES
+          AND src.waiting_txn_fingerprint_id != '\x0000000000000000'::BYTES))
 
           -- join back to the same event
           AND tgt.blocking_txn_id = src.blocking_txn_id
           AND tgt.waiting_txn_id = src.waiting_txn_id
           AND tgt.collection_ts  = src.collection_ts
 
-          -- but only when the source has been filled in
-          AND src.blocking_txn_fingerprint_id != '\x0000000000000000'::BYTES
-          AND src.waiting_txn_fingerprint_id != '\x0000000000000000'::BYTES
 
           -- limited to recent events for the current test run
           AND tgt.test_run = test_name

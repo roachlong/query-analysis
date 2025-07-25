@@ -14,11 +14,22 @@ git status
 ## Cockroach
 If we're executing the PoC as a stand alone lab we can install and run a single node instance of cockroach on our laptops.  For Mac you can install CRDB with ```brew install cockroachdb/tap/cockroach```.  For Windows you can download and extract the latest binary from [here](https://www.cockroachlabs.com/docs/releases), then add the location of the cockroach.exe file (i.e. C:\Users\myname\AppData\Roaming\cockroach) to your Windows Path environment variable.
 
-Then open a new Mac Terminal or PowerShell window and execute the following command to launch your single node database.
+Then open a new Mac Terminal or PowerShell window and execute the following command to launch your single node database, here we are testing with v24.1.
 ```
-cockroach start-single-node --insecure --store=./data --background
+alias crdb24=/opt/homebrew/Cellar/cockroach\@24.1/24.1.19/bin/cockroach
+crdb24 start-single-node --insecure --store=./data --background
 ```
 Then open a browser to http://localhost:8080 to view the dashboard for your local cockroach instance
+
+And populate our database leveraging scripts from the distributed-rollups repository.
+```
+conn_str="postgresql://localhost:26257/defaultdb?sslmode=disable"
+cd ../distributed-rollups/
+cockroach sql --url "$conn_str" -f 00-initial-schema.sql
+export conn_str="${conn_str/defaultdb/schedules}"
+cockroach sql --url "$conn_str" -f 01-populate-sample-data.sql
+cd -
+```
 
 There are also a few cluster settings that manage how much information is stored in our internal obseravbility tables.  The default values for these have been decreased since v24.1 in an effort to reduce cardinality of information collected and decrease memory pressure leading to improved performance.  But these default values may be artificially low for many workloads and small cluster sizes.  For benchmark testing, in non-production environments where we can control the velocity and volumne of data for our workloads, you may be able to adjust these settings and observe the behavior in our system.
 ```
@@ -33,16 +44,16 @@ set cluster setting sql.insights.execution_insights_capacity = 20000;  -- instea
 ## Setup Query Analysis Tables
 When we run workload tests we may want to compare results between runs or analyze the data from a particular run later.  Our CRDB internal tables offer great insights into contention events, transaction runtimes, statement statistics, etc.  However, these are in-memory structures and data will roll-off eventually, or if you restart your nodes the data is lost.  But we can create storage tables and offload information for specific runs and maintain that data over time.  And with real tables we can create an indexing strategy that will make it easier for us to query the data.  The recommendation is to load your test runs based on a "partition" identifier and use TTL to control when you want to cleanup old test runs.  We don't really need to maintain partitions since CRDB is already distributing our data evenly across ranges.  But we'll add a test_run identifier so we can easily segment our data when querying.  And by defualt we'll expire the data for a test run after 90 days.
 
-First we'll store the connection string as a variable in our terminal shell window.  On Mac variables are assigned like ```my_var="example"``` and on Windows we proceed the variable assignment with a $ symbol ```$my_var="example"```.
-```
-conn_str="postgresql://localhost:26257/schedules?sslmode=disable"
-```
-
 For demonstration purposes I'm going to capture observability information from the following crdb_internal tables.
 - transaction_contention_events
 - cluster_execution_insights
 - transaction_statistics
 - statement_statistics
+
+First we'll store the connection string as a variable in our terminal shell window.  On Mac variables are assigned like ```my_var="example"``` and on Windows we proceed the variable assignment with a $ symbol ```$my_var="example"```.
+```
+conn_str="postgresql://localhost:26257/schedules?sslmode=disable"
+```
 
 We can create the storage tables with TTL enabled and helper functions to load the tables by executing the following scripts based on your version of CRDB.
 ```
@@ -205,11 +216,12 @@ and either v24
 cockroach sql --url "$conn_str" -e """
 CALL workload_test.inspect_contention_from_exception(
   '$$(echo "$error_str")$$',
-  NULL,              -- out select_query
-  'test-caller-1',   -- in caller_id
-  'Transactions',    -- in app_name
-  'public',          -- in schema_name
-  'same_app'         -- in contention option
+  NULL,                    -- out select_query
+  'test-caller-1',         -- in caller_id
+  'load_test_2025_06_18',  -- in test_run
+  'Transactions',          -- in app_name
+  'public',                -- in schema_name
+  'same_app'               -- in contention option
 );
 """
 

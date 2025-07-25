@@ -93,6 +93,8 @@ CREATE TABLE workload_test.cluster_execution_insights (
 	cpu_sql_nanos INT8 NULL,
 	error_code STRING NULL,
 	last_error_redactable STRING NULL,
+	CONSTRAINT uq_trei_run_txn_stmt
+		UNIQUE (test_run, txn_fingerprint_id, stmt_fingerprint_id),
     CONSTRAINT fk_trei_to_trc FOREIGN KEY (test_run)
         REFERENCES workload_test.test_run_configurations (test_run)
 		ON DELETE CASCADE,

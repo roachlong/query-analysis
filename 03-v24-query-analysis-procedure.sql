@@ -54,6 +54,7 @@ CREATE OR REPLACE PROCEDURE workload_test.inspect_contention_from_exception(
   exception_str     STRING,
   OUT select_query  STRING,
   in_caller_id      STRING DEFAULT gen_random_uuid()::STRING,
+  in_test_run       STRING DEFAULT NULL,
   in_app_name       STRING DEFAULT NULL,
   in_schema_name    STRING DEFAULT NULL,
   in_option         STRING DEFAULT 'same_app'
@@ -97,9 +98,11 @@ BEGIN
     COALESCE(i.stmt_fingerprint_id, c.waiting_stmt_fingerprint_id) AS stmt_fingerprint_id
   FROM workload_test.transaction_contention_events AS c
   LEFT JOIN workload_test.cluster_execution_insights AS i
-    ON i.txn_fingerprint_id = c.waiting_txn_fingerprint_id
+    ON i.test_run = c.test_run
+   AND i.txn_fingerprint_id = c.waiting_txn_fingerprint_id
    AND i.stmt_fingerprint_id = c.waiting_stmt_fingerprint_id
-  WHERE c.waiting_txn_id::STRING LIKE txn_id_prefix || '%'
+  WHERE c.test_run = in_test_run
+    AND c.waiting_txn_id::STRING LIKE txn_id_prefix || '%'
     AND c.contending_pretty_key = contention_key
     AND c.collection_ts BETWEEN conflict_ts AND conflict_ts + INTERVAL '60 seconds'
     AND (in_schema_name IS NULL OR c.schema_name = in_schema_name)
@@ -124,10 +127,11 @@ BEGIN
       NULL AS contention_type,
       i.stmt_fingerprint_id
     FROM workload_test.cluster_execution_insights AS i
-    WHERE i.txn_id::TEXT LIKE txn_id_prefix || '%'
+    WHERE i.test_run = in_test_run
+      AND i.txn_id::TEXT LIKE txn_id_prefix || '%'
       AND i.status = 'Failed'
       AND i.last_error_redactable LIKE '%' || retry_error_type || '%'
-      AND i.start_time BETWEEN conflict_ts - INTERVAL '30 seconds' AND conflict_ts + INTERVAL '30 seconds'
+      -- AND i.start_time BETWEEN conflict_ts - INTERVAL '30 seconds' AND conflict_ts + INTERVAL '30 seconds'
       AND (in_app_name IS NULL OR i.app_name = in_app_name)
     ORDER BY i.start_time
     LIMIT 1;
@@ -151,8 +155,9 @@ BEGIN
       NULL AS contention_type,
       i.stmt_fingerprint_id
     FROM workload_test.cluster_execution_insights AS i
-    WHERE i.txn_id::TEXT LIKE txn_id_prefix || '%'
-      AND i.start_time BETWEEN conflict_ts - INTERVAL '30 seconds' AND conflict_ts + INTERVAL '30 seconds'
+    WHERE i.test_run = in_test_run
+      AND i.txn_id::TEXT LIKE txn_id_prefix || '%'
+      -- AND i.start_time BETWEEN conflict_ts - INTERVAL '30 seconds' AND conflict_ts + INTERVAL '30 seconds'
       AND (in_app_name IS NULL OR i.app_name = in_app_name)
       AND i.query NOT LIKE 'SHOW%'
     ORDER BY i.start_time DESC
@@ -188,23 +193,62 @@ BEGIN
     aggregation_interval,
     index_recommendations
   )
+
   SELECT
     f.caller_id,
     tx.test_run,
     tx_stmt.ord,
-    CASE WHEN tx.fingerprint_id = f.blocking_txn_fingerprint_id THEN 'blocking' ELSE 'waiting' END AS role,
-    CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN 'failed' ELSE NULL END AS status,
-    CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN f.collection_ts ELSE NULL END AS collection_ts,
+    CASE 
+      WHEN tx.fingerprint_id = f.blocking_txn_fingerprint_id 
+      THEN 'blocking' 
+      ELSE 'waiting' 
+    END AS role,
+    CASE 
+      WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
+        AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
+      THEN 'failed' 
+    END AS status,
+    CASE 
+      WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
+        AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
+      THEN f.collection_ts 
+    END AS collection_ts,
     tx.aggregated_ts,
     tx.app_name,
-    CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN f.database_name ELSE NULL END AS database_name,
-    CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN f.schema_name ELSE NULL END AS schema_name,
-    CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN f.table_name ELSE NULL END AS table_name,
-    CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN f.index_name ELSE NULL END AS index_name,
+    CASE 
+      WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
+        AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
+      THEN f.database_name 
+    END AS database_name,
+    CASE 
+      WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
+        AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
+      THEN f.schema_name 
+    END AS schema_name,
+    CASE 
+      WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
+        AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
+      THEN f.table_name 
+    END AS table_name,
+    CASE 
+      WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
+        AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
+      THEN f.index_name 
+    END AS index_name,
     tx.metadata,
     tx.statistics,
-    CASE WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id THEN f.contention_type ELSE NULL END AS contention_type,
-    CASE WHEN f.table_name IS NOT NULL AND st.metadata ? 'querySummary' AND st.metadata->>'querySummary' LIKE '%' || f.table_name || '%' THEN true ELSE false END AS contention,
+    CASE 
+      WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
+        AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
+      THEN f.contention_type 
+    END AS contention_type,
+    CASE 
+      WHEN f.table_name IS NOT NULL 
+        AND st.metadata ? 'querySummary' 
+        AND st.metadata->>'querySummary' LIKE '%'||f.table_name||'%' 
+      THEN true 
+      ELSE false 
+    END AS contention,
     st.fingerprint_id,
     st.transaction_fingerprint_id,
     st.plan_hash,
@@ -213,33 +257,61 @@ BEGIN
     st.sampled_plan,
     st.aggregation_interval,
     st.index_recommendations
-  FROM workload_test.transaction_statistics AS tx
-  JOIN workload_test.caller_failed_statement AS f
-    ON f.caller_id = in_caller_id
-   AND tx.fingerprint_id IN (f.blocking_txn_fingerprint_id, f.waiting_txn_fingerprint_id)
-   AND tx.aggregated_ts = date_trunc('hour', f.collection_ts)
-   AND (
-     (tx.fingerprint_id = f.blocking_txn_fingerprint_id AND (
-       (in_option = 'same_app' AND tx.app_name = f.app_name) OR
-       (in_option = 'diff_app' AND tx.app_name <> f.app_name) OR
-       in_option = 'any_app'))
-     OR (tx.fingerprint_id <> f.blocking_txn_fingerprint_id OR f.blocking_txn_fingerprint_id IS NULL)
-       AND tx.app_name = f.app_name
-   )
+    
+  FROM workload_test.caller_failed_statement AS f
+
+  -- pick the single tx row whose aggregated_ts is the latest ≤ hour(f.collection_ts)
+  JOIN LATERAL (
+    SELECT tx2.*
+    FROM workload_test.transaction_statistics AS tx2
+    WHERE tx2.fingerprint_id IN (
+        f.blocking_txn_fingerprint_id,
+        f.waiting_txn_fingerprint_id
+      )
+      AND (
+        (tx2.fingerprint_id = f.blocking_txn_fingerprint_id AND (
+          (in_option = 'same_app' AND tx2.app_name = f.app_name) OR
+          (in_option = 'diff_app' AND tx2.app_name <> f.app_name) OR
+          in_option = 'any_app'
+        ))
+        OR ((tx2.fingerprint_id <> f.blocking_txn_fingerprint_id
+            OR f.blocking_txn_fingerprint_id IS NULL)
+            AND tx2.app_name = f.app_name)
+      )
+      AND tx2.aggregated_ts <= date_trunc('hour', f.collection_ts)
+    ORDER BY tx2.aggregated_ts DESC
+    LIMIT 1
+  ) AS tx ON true
+
+  -- unnest the stmtFingerprintIDs with ordinality
   JOIN LATERAL (
     SELECT
-      ord,
+      arr.ord,
       tx.fingerprint_id,
-      decode(stmt_hex, 'hex')  AS stmt_fingerprint_id
-    FROM jsonb_array_elements_text(tx.metadata->'stmtFingerprintIDs')
-    WITH ORDINALITY AS arr(stmt_hex, ord)
-  ) AS tx_stmt ON tx_stmt.fingerprint_id = tx.fingerprint_id
-  JOIN workload_test.statement_statistics AS st
-    ON st.transaction_fingerprint_id = tx.fingerprint_id
-   AND st.fingerprint_id = tx_stmt.stmt_fingerprint_id
-   AND st.aggregated_ts = tx.aggregated_ts
-   AND st.app_name = tx.app_name
-   AND st.test_run = tx.test_run;
+      decode(arr.stmt_hex, 'hex') AS stmt_fingerprint_id
+    FROM jsonb_array_elements_text(
+          tx.metadata->'stmtFingerprintIDs'
+        ) WITH ORDINALITY AS arr(stmt_hex, ord)
+  ) AS tx_stmt
+    ON tx_stmt.fingerprint_id = tx.fingerprint_id
+
+  -- pick the single stmt row whose aggregated_ts is the latest ≤ tx.aggregated_ts
+  JOIN LATERAL (
+    SELECT st2.*
+    FROM workload_test.statement_statistics AS st2
+    WHERE st2.test_run = tx.test_run
+      AND st2.transaction_fingerprint_id = tx.fingerprint_id
+      AND st2.fingerprint_id = tx_stmt.stmt_fingerprint_id
+      AND st2.app_name = tx.app_name
+      AND st2.aggregated_ts <= tx.aggregated_ts
+    ORDER BY st2.aggregated_ts DESC
+    LIMIT 1
+  ) AS st ON true
+
+  WHERE tx.test_run = in_test_run
+    AND f.caller_id = in_caller_id
+
+  ORDER BY tx.fingerprint_id, tx_stmt.ord;
   
   select_query :=
     'SELECT ' ||

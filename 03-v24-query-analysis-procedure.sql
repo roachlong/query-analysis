@@ -334,6 +334,6 @@ BEGIN
     '  stmt_metadata->''query'' AS sql_statement ' ||
     'FROM workload_test.caller_contention_results ' ||
     'WHERE caller_id = ' || quote_literal(in_caller_id) || ' ' ||
-    'ORDER BY test_run, encode(transaction_fingerprint_id, ''hex''), ord;';
+    'ORDER BY test_run, role, ord;';
 END;
 $$;

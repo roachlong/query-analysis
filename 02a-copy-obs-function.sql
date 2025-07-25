@@ -59,7 +59,7 @@ BEGIN
     test_name := test_runs[i];
     test_db   := test_dbs[i];
     from_ts   := coalesce(last_times[i], start_times[i]);
-    to_ts     := LEAST(now(), end_times[i]) + INTERVAL '10 minutes';
+    to_ts     := LEAST(now() - INTERVAL '10 seconds', end_times[i] + INTERVAL '10 minutes');
 
     -- FIRST WE'LL CHECK FOR NON-AGGREGATED OBSERVABILITY METRICS
     IF from_ts < to_ts THEN

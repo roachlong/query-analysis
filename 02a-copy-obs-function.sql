@@ -176,7 +176,24 @@ BEGIN
       WHERE i.database_name = test_db
         AND i.start_time >= from_ts
         AND i.start_time < to_ts
-      ON CONFLICT (test_run, txn_fingerprint_id, stmt_fingerprint_id)
+      ON CONFLICT ON CONSTRAINT uq_trei_run_txn_stmt
+      DO NOTHING;
+
+      -- record every txn_id → fingerprint seen (duplicates silently ignored)
+      INSERT INTO workload_test.txn_id_map (
+        test_run,
+        txn_id,
+        txn_fingerprint_id
+      )
+      SELECT
+        test_name,
+        i.txn_id,
+        i.txn_fingerprint_id
+      FROM crdb_internal.cluster_execution_insights AS i
+      WHERE i.database_name = test_db
+        AND i.start_time >= from_ts
+        AND i.start_time < to_ts
+      ON CONFLICT ON CONSTRAINT uq_txn_map_run_id
       DO NOTHING;
 
       RAISE NOTICE 'Copied cluster_execution_insights: test_name=%, test_db=%, from_ts=%, to_ts=%',

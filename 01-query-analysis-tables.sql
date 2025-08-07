@@ -5,6 +5,7 @@ CREATE SCHEMA IF NOT EXISTS workload_test;
 
 DROP TABLE IF EXISTS workload_test.transaction_contention_events CASCADE;
 DROP TABLE IF EXISTS workload_test.cluster_execution_insights CASCADE;
+DROP TABLE IF EXISTS workload_test.txn_id_map CASCADE;
 DROP TABLE IF EXISTS workload_test.transaction_statistics CASCADE;
 DROP TABLE IF EXISTS workload_test.statement_statistics CASCADE;
 DROP TABLE IF EXISTS workload_test.test_run_configurations CASCADE;
@@ -94,13 +95,28 @@ CREATE TABLE workload_test.cluster_execution_insights (
 	error_code STRING NULL,
 	last_error_redactable STRING NULL,
 	CONSTRAINT uq_trei_run_txn_stmt
-		UNIQUE (test_run, txn_fingerprint_id, stmt_fingerprint_id),
+		UNIQUE (test_run, txn_fingerprint_id, stmt_fingerprint_id, status, app_name, COALESCE(last_error_redactable, '<<NULL>>')),
     CONSTRAINT fk_trei_to_trc FOREIGN KEY (test_run)
         REFERENCES workload_test.test_run_configurations (test_run)
 		ON DELETE CASCADE,
     INDEX idx_trei_by_test_run (test_run)
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(start_time::TIMESTAMPTZ + INTERVAL \'90 days\')');
+
+CREATE TABLE workload_test.txn_id_map (
+    id                   UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+    test_run             STRING    NOT NULL,
+    txn_id               UUID      NOT NULL,
+    txn_fingerprint_id   BYTES     NOT NULL,
+
+    -- ensure one mapping per run + txn_id
+    CONSTRAINT uq_txn_map_run_id
+        UNIQUE (test_run, txn_id),
+    CONSTRAINT fk_tim_to_trc FOREIGN KEY (test_run)
+        REFERENCES workload_test.test_run_configurations (test_run)
+		ON DELETE CASCADE,
+    INDEX idx_tim_by_test_run (test_run)
+);
 
 
 -- crdb_internal.transaction_statistics

@@ -72,10 +72,27 @@ BEGIN
 
   -- Extract values from exception_str into variables
   SELECT
-    substring(exception_str FROM 'TransactionRetryWithProtoRefreshError:[[:space:]]*([A-Za-z_()]+):'),
-    substring(exception_str FROM '[[:space:]]*key=([^ ]+)'),
-    to_timestamp(substring(exception_str FROM '[[:space:]]*ts=([0-9]+\.[0-9]+)')::FLOAT8),
-    substring(exception_str FROM '"sql txn" meta=\{id=([0-9A-Fa-f]+)')
+    -- retry_error_type
+    substring(exception_str 
+      FROM 'TransactionRetryWithProtoRefreshError:[[:space:]]*([A-Za-z_()]+):'
+    ),
+
+    -- contention_key, only match the key inside the "sql txn" meta={…}
+    substring(exception_str 
+      FROM '"sql txn" meta=\\{[^}]*key=([^ ]+)'
+    ),
+
+    -- conflict_ts, only match the ts inside the same block
+    to_timestamp(
+      substring(exception_str 
+        FROM '"sql txn" meta=\\{[^}]*ts=([0-9]+\.[0-9]+)'
+      )::FLOAT8
+    ),
+
+    -- txn_id_prefix
+    substring(exception_str 
+      FROM '"sql txn" meta=\\{id=([0-9A-Fa-f]+)'
+    )
   INTO retry_error_type, contention_key, conflict_ts, txn_id_prefix;
 
   -- RAISE NOTICE 'DEBUG extracted: retry_error_type=%, key=%, ts=%, txn_id_prefix=%',
@@ -126,9 +143,12 @@ BEGIN
       NULL AS index_name,
       NULL AS contention_type,
       i.stmt_fingerprint_id
-    FROM workload_test.cluster_execution_insights AS i
-    WHERE i.test_run = in_test_run
-      AND i.txn_id::TEXT LIKE txn_id_prefix || '%'
+    FROM workload_test.txn_id_map AS m
+    JOIN workload_test.cluster_execution_insights AS i
+      ON i.test_run               = m.test_run
+     AND i.txn_fingerprint_id     = m.txn_fingerprint_id
+    WHERE m.test_run = in_test_run
+      AND m.txn_id::TEXT LIKE txn_id_prefix || '%'
       AND i.status = 'Failed'
       AND i.last_error_redactable LIKE '%' || retry_error_type || '%'
       -- AND i.start_time BETWEEN conflict_ts - INTERVAL '30 seconds' AND conflict_ts + INTERVAL '30 seconds'
@@ -154,9 +174,12 @@ BEGIN
       NULL AS index_name,
       NULL AS contention_type,
       i.stmt_fingerprint_id
-    FROM workload_test.cluster_execution_insights AS i
-    WHERE i.test_run = in_test_run
-      AND i.txn_id::TEXT LIKE txn_id_prefix || '%'
+    FROM workload_test.txn_id_map AS m
+    JOIN workload_test.cluster_execution_insights AS i
+      ON i.test_run               = m.test_run
+     AND i.txn_fingerprint_id     = m.txn_fingerprint_id
+    WHERE m.test_run = in_test_run
+      AND m.txn_id::TEXT LIKE txn_id_prefix || '%'
       -- AND i.start_time BETWEEN conflict_ts - INTERVAL '30 seconds' AND conflict_ts + INTERVAL '30 seconds'
       AND (in_app_name IS NULL OR i.app_name = in_app_name)
       AND i.query NOT LIKE 'SHOW%'
@@ -280,7 +303,7 @@ BEGIN
       )
       AND tx2.aggregated_ts <= date_trunc('hour', f.collection_ts)
     ORDER BY tx2.aggregated_ts DESC
-    LIMIT 1
+    LIMIT 2
   ) AS tx ON true
 
   -- unnest the stmtFingerprintIDs with ordinality

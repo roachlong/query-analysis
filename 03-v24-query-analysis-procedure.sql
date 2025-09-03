@@ -79,19 +79,19 @@ BEGIN
 
     -- contention_key, only match the key inside the "sql txn" meta={…}
     substring(exception_str 
-      FROM '"sql txn" meta=\\{[^}]*key=([^ ]+)'
+      FROM 'conflicting txn: meta=\{[^}]*key=([^ ]+)'
     ),
 
     -- conflict_ts, only match the ts inside the same block
     to_timestamp(
       substring(exception_str 
-        FROM '"sql txn" meta=\\{[^}]*ts=([0-9]+\.[0-9]+)'
+        FROM 'conflicting txn: meta=\{[^}]*ts=([0-9]+\.[0-9]+)'
       )::FLOAT8
     ),
 
     -- txn_id_prefix
     substring(exception_str 
-      FROM '"sql txn" meta=\\{id=([0-9A-Fa-f]+)'
+      FROM '"sql txn" meta=\{id=([0-9A-Fa-f]+)'
     )
   INTO retry_error_type, contention_key, conflict_ts, txn_id_prefix;
 

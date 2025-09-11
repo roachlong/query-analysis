@@ -176,6 +176,7 @@ BEGIN
       WHERE i.database_name = test_db
         AND i.start_time >= from_ts
         AND i.start_time < to_ts
+        AND i.query <> 'SELECT _'
       ON CONFLICT ON CONSTRAINT uq_trei_run_txn_stmt
       DO NOTHING;
 
@@ -193,6 +194,7 @@ BEGIN
       WHERE i.database_name = test_db
         AND i.start_time >= from_ts
         AND i.start_time < to_ts
+        AND i.query <> 'SELECT _'
       ON CONFLICT ON CONSTRAINT uq_txn_map_run_id
       DO NOTHING;
 

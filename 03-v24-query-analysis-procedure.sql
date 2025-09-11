@@ -91,7 +91,7 @@ BEGIN
 
     -- txn_id_prefix
     substring(exception_str 
-      FROM '"sql txn" meta=\{id=([0-9A-Fa-f]+)'
+      FROM '(?:"|\\")sql txn(?:"|\\") meta=\{id=([0-9A-Fa-f]+)'
     )
   INTO retry_error_type, contention_key, conflict_ts, txn_id_prefix;
 
@@ -221,11 +221,13 @@ BEGIN
     f.caller_id,
     tx.test_run,
     tx_stmt.ord,
-    CASE 
-      WHEN tx.fingerprint_id = f.blocking_txn_fingerprint_id 
-      THEN 'blocking' 
-      ELSE 'waiting' 
-    END AS role,
+    CASE
+      WHEN f.blocking_txn_fingerprint_id = f.waiting_txn_fingerprint_id
+      THEN 'both'
+      WHEN tx.fingerprint_id = f.blocking_txn_fingerprint_id
+      THEN 'blocking'
+      ELSE 'waiting'
+    END AS role
     CASE 
       WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
         AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 

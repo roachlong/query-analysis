@@ -226,13 +226,7 @@ BEGIN
     f.caller_id,
     tx.test_run,
     tx_stmt.ord,
-    CASE
-      WHEN f.blocking_txn_fingerprint_id = f.waiting_txn_fingerprint_id
-      THEN 'both'
-      WHEN tx.fingerprint_id = f.blocking_txn_fingerprint_id
-      THEN 'blocking'
-      ELSE 'waiting'
-    END AS role
+    tx.role_kind AS role,
     CASE 
       WHEN tx.fingerprint_id = f.waiting_txn_fingerprint_id 
         AND tx_stmt.stmt_fingerprint_id = f.stmt_fingerprint_id 
@@ -292,25 +286,42 @@ BEGIN
 
   -- pick the single tx row whose aggregated_ts is the latest ≤ hour(f.collection_ts)
   JOIN LATERAL (
-    SELECT tx2.*
-    FROM workload_test.transaction_statistics AS tx2
-    WHERE tx2.fingerprint_id IN (
-        f.blocking_txn_fingerprint_id,
-        f.waiting_txn_fingerprint_id
-      )
-      AND (
-        (tx2.fingerprint_id = f.blocking_txn_fingerprint_id AND (
-          (in_option = 'same_app' AND tx2.app_name = f.app_name) OR
-          (in_option = 'diff_app' AND tx2.app_name <> f.app_name) OR
-          in_option = 'any_app'
-        ))
-        OR ((tx2.fingerprint_id <> f.blocking_txn_fingerprint_id
-            OR f.blocking_txn_fingerprint_id IS NULL)
-            AND tx2.app_name = f.app_name)
-      )
-      AND tx2.aggregated_ts <= date_trunc('hour', f.collection_ts)
-    ORDER BY tx2.aggregated_ts DESC
-    LIMIT 1
+    SELECT *
+    FROM (
+      SELECT
+        tx2.*,
+        CASE
+          WHEN f.blocking_txn_fingerprint_id = f.waiting_txn_fingerprint_id THEN 'both'
+          WHEN tx2.fingerprint_id = f.blocking_txn_fingerprint_id THEN 'blocking'
+          ELSE 'waiting'
+        END AS role_kind,
+        row_number() OVER (
+          PARTITION BY
+            CASE
+              WHEN f.blocking_txn_fingerprint_id = f.waiting_txn_fingerprint_id THEN 'both'
+              WHEN tx2.fingerprint_id = f.blocking_txn_fingerprint_id THEN 'blocking'
+              ELSE 'waiting'
+            END
+          ORDER BY tx2.aggregated_ts DESC
+        ) AS rn
+      FROM workload_test.transaction_statistics AS tx2
+      WHERE tx2.fingerprint_id IN (
+              f.blocking_txn_fingerprint_id,
+              f.waiting_txn_fingerprint_id
+            )
+        AND (
+          (tx2.fingerprint_id = f.blocking_txn_fingerprint_id AND (
+            (in_option = 'same_app' AND tx2.app_name = f.app_name) OR
+            (in_option = 'diff_app' AND tx2.app_name <> f.app_name) OR
+            in_option = 'any_app'
+          ))
+          OR ((tx2.fingerprint_id <> f.blocking_txn_fingerprint_id
+              OR f.blocking_txn_fingerprint_id IS NULL)
+              AND tx2.app_name = f.app_name)
+        )
+        AND tx2.aggregated_ts <= date_trunc('hour', f.collection_ts)
+    ) s
+    WHERE s.rn = 1
   ) AS tx ON true
 
   -- unnest the stmtFingerprintIDs with ordinality

@@ -77,10 +77,15 @@ BEGIN
       FROM 'TransactionRetryWithProtoRefreshError:[[:space:]]*([A-Za-z_()]+):'
     ),
 
-    -- contention_key, only match the key inside the "sql txn" meta={…}
-    substring(exception_str 
-      FROM 'conflicting txn: meta=\{[^}]*key=([^ ]+)'
-    ),
+    -- contention_key, only match the key inside the conflicting txn: meta={…}
+    regexp_replace(
+      substring(exception_str 
+        FROM 'conflicting txn: meta=\{[^}]*key=([^ ]+)'
+      ),
+      E'\\\\(["\\\\])',   -- match \" or \\
+      E'\\1',             -- keep just " or \
+      'g'
+    ) AS contention_key
 
     -- conflict_ts, only match the ts inside the same block
     to_timestamp(
@@ -305,7 +310,7 @@ BEGIN
       )
       AND tx2.aggregated_ts <= date_trunc('hour', f.collection_ts)
     ORDER BY tx2.aggregated_ts DESC
-    LIMIT 2
+    LIMIT 1
   ) AS tx ON true
 
   -- unnest the stmtFingerprintIDs with ordinality

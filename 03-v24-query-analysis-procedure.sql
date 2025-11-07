@@ -85,7 +85,7 @@ BEGIN
       E'\\\\(["\\\\])',   -- match \" or \\
       E'\\1',             -- keep just " or \
       'g'
-    ) AS contention_key
+    ) AS contention_key,
 
     -- conflict_ts, only match the ts inside the same block
     to_timestamp(

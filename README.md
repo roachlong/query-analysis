@@ -17,7 +17,7 @@ If we're executing the PoC as a stand alone lab we can install and run a single 
 Then open a new Mac Terminal or PowerShell window and execute the following command to launch your single node database, here we are testing with v24.1.
 ```
 alias crdb24=/opt/homebrew/Cellar/cockroach\@24.1/24.1.19/bin/cockroach
-crdb24 start-single-node --insecure --store=./data --background
+crdb24 start-single-node --insecure --advertise-addr=localhost --store=./data --background
 ```
 Then open a browser to http://localhost:8080 to view the dashboard for your local cockroach instance
 
@@ -61,18 +61,38 @@ cockroach sql --url "$conn_str" -f 01-query-analysis-tables.sql
 
 -- and if you want to use a cron job
 cockroach sql --url "$conn_str" -f 02a-copy-obs-function.sql
--- or if you want to leverage triggers v24.3+
+-- OR leverage a python client to avoid potential contention
+pip install "psycopg[binary]"
+export CRDB_DSN="postgresql://root@localhost:26257/schedules?sslmode=disable"
+python copy_obs_data.py
+-- OR if you want to leverage triggers v24.3+
 cockroach sql --url "$conn_str" -f 02b-copy-obs-triggers.sql
 
--- and either v24
+-- AND either v24
 cockroach sql --url "$conn_str" -f 03-v24-query-analysis-procedure.sql
--- or v25 script
+-- OR v25 script
 cockroach sql --url "$conn_str" -f 03-v25-query-analysis-function.sql
 ```
 
 If you're on a version <24.3 or you want to leverage a scheduled job to copy the observability metrics (instead of triggers) then you can setup a cron job to update your physical observability tables periodically by adding a similar line below to ```crontab -e```.
 ```
 * * * * * /opt/homebrew/bin/cockroach sql --url "postgresql://localhost:26257/schedules?sslmode=disable" -e="SELECT workload_test.copy_test_run_observations();" >> /var/log/crdb/copy_test_run_observations.log 2>&1
+```
+OR if uisng the python client to capture observability metrics, first setup your script on the server
+```
+sudo mkdir -p /usr/local/bin /var/log/crdb
+sudo cp copy_obs_data.py /usr/local/bin/copy_obs_data.py
+sudo cp run_copy_obs_data.sh /usr/local/bin/run_copy_obs_data.sh
+sudo chmod +x /usr/local/bin/copy_obs_data.py
+/opt/homebrew/bin/pip3 install "psycopg[binary]"
+sudo sh -c 'cat >/etc/copy_obs_data.env' <<'EOF'
+CRDB_DSN=postgresql://root@localhost:26257/schedules?sslmode=disable
+EOF
+sudo chmod 600 /etc/copy_obs_data.env
+```
+Then update ```crontab -e``` with a line similar to below.
+```
+* * * * * /usr/local/bin/run_copy_obs_data.sh
 ```
 
 You may also want to setup a log directory and configure log rotation

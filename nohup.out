@@ -1,0 +1,3 @@
+2026-02-17 21:24:22,645 INFO [42348] Metrics exposed on :8000
+2026-02-17 21:24:55,689 INFO [42348] Shutdown requested...
+2026-02-17 21:24:55,830 INFO [42348] Daemon exiting cleanly.

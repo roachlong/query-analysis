@@ -19,11 +19,11 @@ CREATE TABLE workload_test.test_run_configurations (
 	database_name STRING NOT NULL,
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ NOT NULL,
-	agg_grace_interval INTERVAL NOT NULL DEFAULT '10 minutes',
+	agg_grace_interval INTERVAL NOT NULL DEFAULT '70 minutes',
     CONSTRAINT uq_test_run_config UNIQUE (test_run),
     INDEX idx_test_run_times (start_time, end_time) STORING (test_run, database_name)
 )
-WITH (ttl = 'on', ttl_expiration_expression = e'(end_time + INTERVAL \'30 days\')');
+WITH (ttl = 'on', ttl_expiration_expression = e'(end_time + INTERVAL \'90 days\')');
 
 
 -- track ingestion state for each stream to enable incremental copying and backfilling
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS workload_test.ingest_state (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (test_run, stream)
 )
-WITH (ttl = 'on', ttl_expiration_expression = e'(updated_at + INTERVAL \'30 days\')');
+WITH (ttl = 'on', ttl_expiration_expression = e'(updated_at + INTERVAL \'90 days\')');
 
 
 -- crdb_internal.transaction_contention_events
@@ -61,7 +61,7 @@ CREATE TABLE workload_test.transaction_contention_events (
 		ON DELETE CASCADE,
     INDEX idx_trce_by_test_run (test_run)
 )
-WITH (ttl = 'on', ttl_expiration_expression = e'(collection_ts + INTERVAL \'30 days\')');
+WITH (ttl = 'on', ttl_expiration_expression = e'(collection_ts + INTERVAL \'90 days\')');
 
 CREATE INDEX ON workload_test.transaction_contention_events (
   collection_ts,
@@ -114,7 +114,7 @@ CREATE TABLE workload_test.cluster_execution_insights (
 		ON DELETE CASCADE,
     INDEX idx_trei_by_test_run (test_run)
 )
-WITH (ttl = 'on', ttl_expiration_expression = e'(start_time::TIMESTAMPTZ + INTERVAL \'30 days\')');
+WITH (ttl = 'on', ttl_expiration_expression = e'(start_time::TIMESTAMPTZ + INTERVAL \'90 days\')');
 
 CREATE TABLE workload_test.txn_id_map (
     id                   UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -148,7 +148,7 @@ CREATE TABLE workload_test.cluster_transaction_statistics (
     CONSTRAINT uq_txn_stats UNIQUE (test_run, aggregated_ts, fingerprint_id, app_name),
     INDEX idx_trts_by_test_run (test_run)
 )
-WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'30 days\')');
+WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'90 days\')');
 
 
 -- crdb_internal.statement_statistics
@@ -171,4 +171,4 @@ CREATE TABLE workload_test.cluster_statement_statistics (
     CONSTRAINT uq_stmt_stats UNIQUE (test_run, aggregated_ts, fingerprint_id, transaction_fingerprint_id, plan_hash, app_name),
     INDEX idx_trss_by_test_run (test_run)
 )
-WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'30 days\')');
+WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'90 days\')');

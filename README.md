@@ -47,81 +47,66 @@ When we run workload tests we may want to compare results between runs or analyz
 For demonstration purposes I'm going to capture observability information from the following crdb_internal tables.
 - transaction_contention_events
 - cluster_execution_insights
-- transaction_statistics
-- statement_statistics
+- cluster_transaction_statistics
+- cluster_statement_statistics
 
 First we'll store the connection string as a variable in our terminal shell window.  On Mac variables are assigned like ```my_var="example"``` and on Windows we proceed the variable assignment with a $ symbol ```$my_var="example"```.
 ```
 conn_str="postgresql://localhost:26257/schedules?sslmode=disable"
 ```
 
-We can create the storage tables with TTL enabled and helper functions to load the tables by executing the following scripts based on your version of CRDB.
+We can create the storage tables with TTL enabled by executing the following script.
 ```
 cockroach sql --url "$conn_str" -f 01-query-analysis-tables.sql
+```
 
--- and if you want to use a cron job
-cockroach sql --url "$conn_str" -f 02a-copy-obs-function.sql
--- OR leverage a python client to avoid potential contention
-pip install "psycopg[binary]"
-export CRDB_DSN="postgresql://root@localhost:26257/schedules?sslmode=disable"
-python copy_obs_data.py
--- OR if you want to leverage triggers v24.3+
-cockroach sql --url "$conn_str" -f 02b-copy-obs-triggers.sql
+Then we'll run a python daemon to capture observanility metrics 
+```
+export DATABASE_URL="postgresql://root@localhost:26257/schedules?sslmode=disable"
+export LOG_FILE="./log/copy_obs_data.log"
+nohup python 02_copy_obs_data.py > /dev/null 2>&1 & disown
+```
 
--- AND either v24
+To stop the process later you can run
+```
+pkill -f 02_copy_obs_data.py
+```
+
+Or to setup the daemon to run as a system service
+```
+cat <<'EOF' > /etc/systemd/system/copy-obs-data.service
+[Unit]
+Description=Copy Observation Data Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/path/to/query-analysis
+Environment="DATABASE_URL=postgresql://user:pass@host:26257/db?sslmode=require"
+Environment="LOG_FILE=/var/log/copy_obs_data.log"
+ExecStart=/usr/bin/python 02_copy_obs_data.py
+Restart=always
+RestartSec=5
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable copy-obs-data
+sudo systemctl start copy-obs-data
+```
+
+Finally we'll setup the function that will allow us to inspect contention related to a SQL retry error.
+```
+-- Either v24
 cockroach sql --url "$conn_str" -f 03-v24-query-analysis-procedure.sql
 -- OR v25 script
 cockroach sql --url "$conn_str" -f 03-v25-query-analysis-function.sql
 ```
-
-If you're on a version <24.3 or you want to leverage a scheduled job to copy the observability metrics (instead of triggers) then you can setup a cron job to update your physical observability tables periodically by adding a similar line below to ```crontab -e```.
-```
-* * * * * /opt/homebrew/bin/cockroach sql --url "postgresql://localhost:26257/schedules?sslmode=disable" -e="SELECT workload_test.copy_test_run_observations();" >> /var/log/crdb/copy_test_run_observations.log 2>&1
-```
-OR if uisng the python client to capture observability metrics, first setup your script on the server
-```
-sudo mkdir -p /usr/local/bin /var/log/crdb
-sudo cp copy_obs_data.py /usr/local/bin/copy_obs_data.py
-sudo cp run_copy_obs_data.sh /usr/local/bin/run_copy_obs_data.sh
-sudo chmod +x /usr/local/bin/copy_obs_data.py
-/opt/homebrew/bin/pip3 install "psycopg[binary]"
-sudo sh -c 'cat >/etc/copy_obs_data.env' <<'EOF'
-CRDB_DSN=postgresql://root@localhost:26257/schedules?sslmode=disable
-EOF
-sudo chmod 600 /etc/copy_obs_data.env
-```
-Then update ```crontab -e``` with a line similar to below.
-```
-* * * * * /usr/local/bin/run_copy_obs_data.sh
-```
-
-You may also want to setup a log directory and configure log rotation
-```
-sudo mkdir -p /var/log/crdb
-sudo chown $(whoami) /var/log/crdb
-brew install logrotate
-sudo tee /opt/homebrew/etc/logrotate.d/copy_test_run_observations << 'EOF'
-/var/log/crdb/copy_test_run_observations.log {
-    # don’t complain if the file is missing
-    missingok
-    # skip rotation if the file is empty
-    notifempty
-    # gzip old logs to save space
-    compress
-    # compress from the *previous* rotation, not immediately
-    delaycompress
-    # copy & truncate the live file so cron can keep writing
-    copytruncate
-    # keep 4 old logs before deleting
-    rotate 4
-    # rotate once a day
-    daily
-    # append YYYYMMDD to rotated names
-    dateext
-}
-EOF
-```
-And then check the status with ```grep cron /var/log/system.log```, ```cat /var/mail/username``` and ```tail -100f /var/log/crdb/copy_test_run_observations.log```
 
 
 ## dbworkload
@@ -168,7 +153,7 @@ INSERT INTO workload_test.test_run_configurations (
   start_time,
   end_time
 ) VALUES (
-  'load_test_2025_06_18',            -- your test_run name
+  'load_test_2026_02_19',            -- your test_run name
   'schedules',                       -- the database you’re targeting
   NOW(),                             -- when the test started
   NOW() + INTERVAL '1 hour'          -- when it ends
@@ -192,46 +177,54 @@ dbworkload run -w transactions.py -c $num_connections -d $(( ${duration} * 60 ))
 When the workload completes it will print out a summary of percentile latencies for each transaction.
 ```
 -------------  ----------------------------
-run_name       Transactions.20250619_012455
-start_time     2025-06-19 01:24:55
-end_time       2025-06-19 02:24:57
-test_duration  3602
+run_name       Transactions.20260219_212810
+start_time     2026-02-19 21:28:10
+end_time       2026-02-19 22:28:10
+test_duration  3600
 -------------  ----------------------------
 
 ┌───────────┬────────────┬───────────┬───────────┬─────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
 │   elapsed │ id         │   threads │   tot_ops │   tot_ops/s │   mean(ms) │   p50(ms) │   p90(ms) │   p95(ms) │   p99(ms) │   max(ms) │
 ├───────────┼────────────┼───────────┼───────────┼─────────────┼────────────┼───────────┼───────────┼───────────┼───────────┼───────────┤
-│     3,602 │ __cycle__  │        16 │    43,000 │          11 │   1,338.95 │  1,326.15 │  2,023.24 │  2,135.07 │  2,660.49 │  4,448.02 │
-│     3,602 │ contention │        16 │    43,000 │          11 │       7.07 │      0.00 │     30.23 │     68.95 │     91.20 │    403.01 │
-│     3,602 │ inventory  │        16 │    43,000 │          11 │     498.48 │    629.15 │    735.37 │    770.45 │    848.55 │  2,699.09 │
-│     3,602 │ price      │        16 │    43,000 │          11 │     166.03 │      0.01 │    672.53 │    715.39 │    798.01 │  2,778.22 │
-│     3,602 │ schedule   │        16 │    43,000 │          11 │      68.00 │      0.01 │    309.03 │    665.77 │    760.33 │  2,029.83 │
-│     3,602 │ status     │        16 │    43,000 │          11 │     599.36 │    646.98 │    746.58 │    780.90 │    859.79 │  2,504.82 │
+│     3,600 │ __cycle__  │        16 │    44,886 │          12 │   1,282.39 │  1,268.77 │  1,931.17 │  2,044.22 │  2,533.65 │  4,632.82 │
+│     3,600 │ contention │        16 │    44,886 │          12 │       5.87 │      0.00 │     23.36 │     58.85 │     76.23 │    139.94 │
+│     3,600 │ inventory  │        16 │    44,886 │          12 │     478.50 │    604.50 │    698.71 │    736.36 │    870.40 │  1,526.28 │
+│     3,600 │ price      │        16 │    44,886 │          12 │     159.65 │      0.01 │    640.60 │    677.26 │    761.08 │  1,529.12 │
+│     3,600 │ schedule   │        16 │    44,886 │          12 │      63.52 │      0.01 │    303.76 │    629.21 │    719.32 │  1,630.14 │
+│     3,600 │ status     │        16 │    44,886 │          12 │     574.84 │    620.94 │    709.18 │    748.64 │    884.37 │  1,590.98 │
 └───────────┴────────────┴───────────┴───────────┴─────────────┴────────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
 ```
 
 
+## Observability
+Our data ingestion process to copy crdb internal system information is publishing metrics and alerts for prometheus.  These are process data points related to the number of observations, lag time and errors ecnountered during the process.  You can use the docker compose file found in the observability folder to investigate and visualize these metrics with grafana.
+```
+cd observability && docker-compose up -d && cd ..
+```
+Then you can navigate to:
+- Prometheus at http://localhost:9090
+- Grafana at http://localhost:3000
+
+In Prometheus you can explore the metrics that we publish
+![copy_obs_data metrics](image.png)
+
+In Grafana you'll need to Go to Connections → Data Sources to add Prometheus with the URL http://prometheus:9090.
+
+
 ## Data Collection
-We can also get more grainular information on transaction and statememt statistics from the CRDB Admin Console, which are backed by our CRDB internal observability tables.  And since we're exporting the data into our own physical tables can compare metrics between runs and measure performance improvements over time.  If you're not using triggers or a cron job to schedule copies then the following function call can be used to capture the metrics for any actively running tests.  This will include four tables for demonstration purposes to pull the contention records, query insights, statement and transaction statistics collected during the run.
-```
-cockroach sql --url "$conn_str" -e """
-SELECT workload_test.copy_test_run_observations();
-"""
+We can also get more grainular information on transaction and statememt statistics from the CRDB Admin Console, which are backed by our CRDB internal observability tables.  And since we're exporting the data into our own physical tables can compare metrics between runs and measure performance improvements over time.
 
-                           copy_test_run_observations
---------------------------------------------------------------------------------
-  {"contention": 81, "insights": 6317, "statements": 894, "transactions": 470}
-```
-
-And then, as an example, we can grab any exception in the workload's log output to investigate statements related to a failed transaction.
+As an example, we can grab any exception in the workload's log output to investigate statements related to a failed transaction.
 ```
 error_str=$(cat <<EOF
-Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 at timestamp 1750299870.665242000,0 too old; must write at or above 1750299870.665242000,2: "sql txn" meta={id=f50e63f3 key=/Table/116/1/"\xb2\xe35\x96^\xd0EL\xb8R\vC_J\xf1;"/0 iso=Serializable pri=0.00809748 epo=0 ts=1750299870.665242000,2 min=1750299870.665242000,0 seq=1} lock=true stat=PENDING rts=1750299870.665242000,0 wto=false gul=1750299871.165242000,0
+Error occurred: restart transaction: TransactionRetryWithProtoRefreshError: WriteTooOldError: write for key /Table/107/1/"\x05\xa6\xfdv\xdejE:\xa7\xe8T\xa7s\v\x192"/0 at timestamp 1771539694.711113000,0 too old; must write at or above 1771539694.715943000,1: "sql txn" meta={id=103453f8 key=/Table/107/1/"\x05\xa6\xfdv\xdejE:\xa7\xe8T\xa7s\v\x192"/0 iso=Serializable pri=0.05014185 epo=0 ts=1771539694.715943000,1 min=1771539694.711113000,0 seq=1} lock=true stat=PENDING rts=1771539694.711113000,0 gul=1771539695.211113000,0 obs={n1@1771539694.711113000,0}
+HINT:  See: https://www.cockroachlabs.com/docs/v25.3/transaction-retry-error-reference.html
+2026-02-19 22:21:38.000001 [WARNING] (MainProcess MainThread) run:507: stats_received=16, expected=16. CPU Util=98.3%, Memory=75.4%
 EOF
 )
 ```
 
-and either v24
+**AND EITHER V24**
 ```
 cockroach sql --url "$conn_str" -e """
 CALL workload_test.inspect_contention_from_exception(
@@ -255,19 +248,24 @@ SELECT   test_run,   collection_ts,   database_name,   schema_name,   table_name
   load_test_2025_06_18 | 2025-06-19 02:24:30.687285+00 | schedules     | public      | NULL       | NULL       | NULL            | Transactions | 1c0d24389254fc7a   | waiting  |     f      | 67a10dfb99638ead    | true     | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"} |          2 | failed | "UPDATE airports SET country = _ WHERE city = _"
 ```
 
-or v25 script
+**OR V25 SCRIPT**
 ```
 cockroach sql --url "$conn_str" -e """
 SELECT * 
 FROM workload_test.inspect_contention_from_exception(
   '$$(echo "$error_str")$$',
-  'Transactions',    -- in app_name
-  'public',          -- in schema_name
-  'same_app'         -- in contention option
+  'load_test_2026_02_19',  -- in test_run
+  'Transactions',          -- in app_name
+  'public',                -- in schema_name
+  'same_app'               -- in contention option
 );
 """
 
-...tbd...
+
+        test_run       | ord |  role   | status |         collection_ts         |     aggregated_ts      |   app_name   | database_name | schema_name | table_name | index_name |                           txn_metadata                           |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    txn_statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | contention_type | contention |   fingerprint_id   | transaction_fingerprint_id |     plan_hash      |                                                                                                                 stmt_metadata                                                                                                                  |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           stmt_statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |         sampled_plan         | aggregation_interval |                                         index_recommendations
+-----------------------+-----+---------+--------+-------------------------------+------------------------+--------------+---------------+-------------+------------+------------+------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------------+------------+--------------------+----------------------------+--------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------+----------------------+---------------------------------------------------------------------------------------------------------
+  load_test_2026_02_19 |   1 | waiting | NULL   | NULL                          | 2026-02-19 22:00:00+00 | Transactions | NULL          | NULL        | NULL       | NULL       | {"stmtFingerprintIDs": ["2ab0c15b7b14e792", "67a10dfb99638ead"]} | {"execution_statistics": {"cnt": 6, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 259390.16666666666, "sqDiff": 49715327768.833336}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 4.096E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 183756, "sqDiff": 2291245488.000001}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 42, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 2, "sqDiff": 0}, "seekCountInternal": {"mean": 2, "sqDiff": 0}, "stepCount": {"mean": 4E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 42, "sqDiff": 0}, "valueBytes": {"mean": 1704, "sqDiff": 0}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "statistics": {"bytesRead": {"mean": 3234.347826086954, "sqDiff": 1224.347826087057}, "cnt": 460, "commitLat": {"mean": 0.004465308069565223, "sqDiff": 0.004778839902503214}, "idleLat": {"mean": 0.04196431198260871, "sqDiff": 0.11875843074468731}, "maxRetries": 0, "numRows": {"mean": 1.9543478260869571, "sqDiff": 20.041304347826088}, "retryLat": {"mean": 0, "sqDiff": 0}, "rowsRead": {"mean": 4E+1, "sqDiff": 0}, "rowsWritten": {"mean": 1, "sqDiff": 0}, "svcLat": {"mean": 0.04553878941304344, "sqDiff": 0.07738831830996401}}} | NULL            |     f      | \x2ab0c15b7b14e792 | \x1c0d24389254fc7a         | \x025144e18ceb2338 | {"db": "schedules", "distsql": false, "fullScan": true, "implicitTxn": false, "query": "SELECT * FROM airports WHERE city = _", "querySummary": "SELECT * FROM airports", "stmtType": "TypeDML", "vec": true}                                  | {"execution_statistics": {"cnt": 7, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 18369.714285714286, "sqDiff": 150085547.4285714}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 2.048E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 90891, "sqDiff": 6.1372647E+8}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 21, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 1, "sqDiff": 0}, "seekCountInternal": {"mean": 1, "sqDiff": 0}, "stepCount": {"mean": 2E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 21, "sqDiff": 0}, "valueBytes": {"mean": 852, "sqDiff": 0}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "index_recommendations": ["creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"], "statistics": {"bytesRead": {"mean": 1617.173913043477, "sqDiff": 306.08695652176425}, "cnt": 460, "failureCount": 0, "firstAttemptCnt": 460, "genericCount": 460, "idleLat": {"mean": 0.0015700895586956505, "sqDiff": 0.0012552656503659783}, "indexes": ["107@1"], "kvNodeIds": [1], "lastErrorCode": "", "lastExecAt": "2026-02-19T22:00:09.751818Z", "latencyInfo": {"max": 0.010465291, "min": 0.000169542}, "maxRetries": 0, "nodes": [1], "numRows": {"mean": 1, "sqDiff": 0}, "ovhLat": {"mean": 0.000004687076086956516, "sqDiff": 1.42785249986337E-7}, "parseLat": {"mean": 0.000006561773913043474, "sqDiff": 9.527536853248694E-8}, "planGists": ["AgHWAQIAHwAAAAMGCg=="], "planLat": {"mean": 0.00012793259565217405, "sqDiff": 0.00003875441849893079}, "regions": [], "rowsRead": {"mean": 2E+1, "sqDiff": 0}, "rowsWritten": {"mean": 0, "sqDiff": 0}, "runLat": {"mean": 0.0007337688347826083, "sqDiff": 0.000674909390925327}, "sqlType": "TypeDML", "svcLat": {"mean": 0.0008729502804347834, "sqDiff": 0.0007422521109827432}, "usedFollowerRead": false}}                                                      | {"Children": [], "Name": ""} | 01:00:00             | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}
+  load_test_2026_02_19 |   2 | waiting | failed | 2026-02-19 21:28:45.989144+00 | 2026-02-19 22:00:00+00 | Transactions | schedules     | public      | NULL       | NULL       | {"stmtFingerprintIDs": ["2ab0c15b7b14e792", "67a10dfb99638ead"]} | {"execution_statistics": {"cnt": 6, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 259390.16666666666, "sqDiff": 49715327768.833336}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 4.096E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 183756, "sqDiff": 2291245488.000001}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 42, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 2, "sqDiff": 0}, "seekCountInternal": {"mean": 2, "sqDiff": 0}, "stepCount": {"mean": 4E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 42, "sqDiff": 0}, "valueBytes": {"mean": 1704, "sqDiff": 0}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "statistics": {"bytesRead": {"mean": 3234.347826086954, "sqDiff": 1224.347826087057}, "cnt": 460, "commitLat": {"mean": 0.004465308069565223, "sqDiff": 0.004778839902503214}, "idleLat": {"mean": 0.04196431198260871, "sqDiff": 0.11875843074468731}, "maxRetries": 0, "numRows": {"mean": 1.9543478260869571, "sqDiff": 20.041304347826088}, "retryLat": {"mean": 0, "sqDiff": 0}, "rowsRead": {"mean": 4E+1, "sqDiff": 0}, "rowsWritten": {"mean": 1, "sqDiff": 0}, "svcLat": {"mean": 0.04553878941304344, "sqDiff": 0.07738831830996401}}} | NULL            |     f      | \x67a10dfb99638ead | \x1c0d24389254fc7a         | \xfc4bcd4933e6c787 | {"db": "schedules", "distsql": false, "fullScan": true, "implicitTxn": false, "query": "UPDATE airports SET country = _ WHERE city = _", "querySummary": "UPDATE airports SET country = _ WHERE city = _", "stmtType": "TypeDML", "vec": true} | {"execution_statistics": {"cnt": 7, "contentionTime": {"mean": 0, "sqDiff": 0}, "cpuSQLNanos": {"mean": 241220.57142857145, "sqDiff": 51071787497.71428}, "maxDiskUsage": {"mean": 0, "sqDiff": 0}, "maxMemUsage": {"mean": 4.096E+4, "sqDiff": 0}, "mvccIteratorStats": {"blockBytes": {"mean": 90891, "sqDiff": 6.1372647E+8}, "blockBytesInCache": {"mean": 0, "sqDiff": 0}, "keyBytes": {"mean": 0, "sqDiff": 0}, "pointCount": {"mean": 21, "sqDiff": 0}, "pointsCoveredByRangeTombstones": {"mean": 0, "sqDiff": 0}, "rangeKeyContainedPoints": {"mean": 0, "sqDiff": 0}, "rangeKeyCount": {"mean": 0, "sqDiff": 0}, "rangeKeySkippedPoints": {"mean": 0, "sqDiff": 0}, "seekCount": {"mean": 1, "sqDiff": 0}, "seekCountInternal": {"mean": 1, "sqDiff": 0}, "stepCount": {"mean": 2E+1, "sqDiff": 0}, "stepCountInternal": {"mean": 21, "sqDiff": 0}, "valueBytes": {"mean": 852, "sqDiff": 0}}, "networkBytes": {"mean": 0, "sqDiff": 0}, "networkMsgs": {"mean": 0, "sqDiff": 0}}, "index_recommendations": ["creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"], "statistics": {"bytesRead": {"mean": 1617.173913043477, "sqDiff": 306.08695652176425}, "cnt": 460, "failureCount": 21, "firstAttemptCnt": 460, "genericCount": 460, "idleLat": {"mean": 0.036893010408695644, "sqDiff": 0.06785057027505134}, "indexes": ["107@1"], "kvNodeIds": [1], "lastErrorCode": "40001", "lastExecAt": "2026-02-19T22:00:09.751821Z", "latencyInfo": {"max": 0.036111709, "min": 0.000372416}, "maxRetries": 0, "nodes": [1], "numRows": {"mean": 0.9543478260869565, "sqDiff": 20.041304347826095}, "ovhLat": {"mean": 0.000001267558695652189, "sqDiff": 1.7273325541521575E-10}, "parseLat": {"mean": 0.000012714502173913054, "sqDiff": 0.0000012472759055609989}, "planGists": ["AgHWAQIAHwAAAAMHDAUMIdYBAAA="], "planLat": {"mean": 0.00013482153695652173, "sqDiff": 0.00002494050667105438}, "regions": [], "rowsRead": {"mean": 2E+1, "sqDiff": 0}, "rowsWritten": {"mean": 1, "sqDiff": 0}, "runLat": {"mean": 0.0015842477521739126, "sqDiff": 0.0035261367312931402}, "sqlType": "TypeDML", "svcLat": {"mean": 0.0017330513500000003, "sqDiff": 0.0036076589992625487}, "usedFollowerRead": false}} | {"Children": [], "Name": ""} | 01:00:00             | {"creation : CREATE INDEX ON schedules.public.airports (city) STORING (airport_code, name, country);"}
 ```
 
 ## Slow Performers

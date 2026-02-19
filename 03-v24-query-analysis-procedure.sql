@@ -304,7 +304,7 @@ BEGIN
             END
           ORDER BY tx2.aggregated_ts DESC
         ) AS rn
-      FROM workload_test.transaction_statistics AS tx2
+      FROM workload_test.cluster_transaction_statistics AS tx2
       WHERE tx2.fingerprint_id IN (
               f.blocking_txn_fingerprint_id,
               f.waiting_txn_fingerprint_id
@@ -319,7 +319,7 @@ BEGIN
               OR f.blocking_txn_fingerprint_id IS NULL)
               AND tx2.app_name = f.app_name)
         )
-        AND tx2.aggregated_ts <= date_trunc('hour', f.collection_ts)
+        AND tx2.aggregated_ts <= f.collection_ts + interval '2 hours'
     ) s
     WHERE s.rn = 1
   ) AS tx ON true
@@ -339,7 +339,7 @@ BEGIN
   -- pick the single stmt row whose aggregated_ts is the latest ≤ tx.aggregated_ts
   JOIN LATERAL (
     SELECT st2.*
-    FROM workload_test.statement_statistics AS st2
+    FROM workload_test.cluster_statement_statistics AS st2
     WHERE st2.test_run = tx.test_run
       AND st2.transaction_fingerprint_id = tx.fingerprint_id
       AND st2.fingerprint_id = tx_stmt.stmt_fingerprint_id

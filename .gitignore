@@ -177,4 +177,5 @@ cython_debug/
 .DS_Store
 data
 settings
+log
 *.log

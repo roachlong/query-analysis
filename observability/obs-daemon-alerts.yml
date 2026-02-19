@@ -1,0 +1,35 @@
+groups:
+- name: obs-daemon
+  rules:
+
+  - alert: ObsDaemonIngestErrors
+    expr: rate(obs_ingest_errors_total[5m]) > 0
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Observation daemon ingest errors detected"
+
+  - alert: ObsDaemonWatermarkLagHigh
+    expr: obs_watermark_lag_seconds > 180
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Observation daemon watermark lag is high (>3m)"
+
+  - alert: ObsDaemonNotIngesting
+    expr: rate(obs_ingest_rows_total[10m]) == 0
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Observation daemon appears to be ingesting zero rows"
+
+  - alert: ObsDaemonBackfillStuck
+    expr: rate(obs_backfill_updated_rows_total[30m]) == 0
+    for: 60m
+    labels:
+      severity: info
+    annotations:
+      summary: "Contention backfill not updating any rows (may be fine if no placeholders exist)"

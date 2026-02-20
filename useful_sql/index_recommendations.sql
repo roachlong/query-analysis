@@ -11,6 +11,7 @@ WITH
 -- ============================================
 params AS (
   SELECT
+    now() - interval '24 hours' AS lookback_period,
     50  AS min_execution_threshold,
     0.5 AS latency_weight,
     0.3 AS contention_weight,
@@ -84,7 +85,8 @@ expanded AS (
     ) AS target(full_path)
   CROSS JOIN params p
   WHERE
-    array_length(ss.index_recommendations, 1) > 0
+    ss.aggregated_ts >= p.lookback_period
+    AND array_length(ss.index_recommendations, 1) > 0
     AND (ss.statistics->'execution_statistics'->>'cnt')::INT >= p.min_execution_threshold
     -- guard: only keep rows where we successfully extracted a path
     AND target.full_path IS NOT NULL

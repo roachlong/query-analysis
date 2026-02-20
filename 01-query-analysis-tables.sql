@@ -20,8 +20,9 @@ CREATE TABLE workload_test.test_run_configurations (
     start_time TIMESTAMPTZ NOT NULL,
     end_time TIMESTAMPTZ NOT NULL,
 	agg_grace_interval INTERVAL NOT NULL DEFAULT '70 minutes',
-    CONSTRAINT uq_test_run_config UNIQUE (test_run),
-    INDEX idx_test_run_times (start_time, end_time) STORING (test_run, database_name)
+    CONSTRAINT uq_test_run_config UNIQUE (test_run)
+		STORING (database_name, start_time, end_time, agg_grace_interval),
+    INDEX idx_test_run_times (start_time, end_time) STORING (test_run, database_name, agg_grace_interval)
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(end_time + INTERVAL \'90 days\')');
 
@@ -59,18 +60,11 @@ CREATE TABLE workload_test.transaction_contention_events (
     CONSTRAINT fk_trce_to_trc FOREIGN KEY (test_run)
         REFERENCES workload_test.test_run_configurations (test_run)
 		ON DELETE CASCADE,
+	INDEX idx_trce_by_collection_ts (collection_ts DESC, id DESC)
+		STORING (test_run, blocking_txn_id, blocking_txn_fingerprint_id, waiting_txn_id, waiting_txn_fingerprint_id, contention_duration, contending_key, contending_pretty_key, waiting_stmt_id, waiting_stmt_fingerprint_id, database_name, schema_name, table_name, index_name, contention_type),
     INDEX idx_trce_by_test_run (test_run)
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(collection_ts + INTERVAL \'90 days\')');
-
-CREATE INDEX ON workload_test.transaction_contention_events (
-  collection_ts,
-  blocking_txn_id,
-  waiting_txn_id
-) STORING (
-  blocking_txn_fingerprint_id,
-  waiting_txn_fingerprint_id
-);
 
 
 -- crdb_internal.cluster_execution_insights
@@ -108,11 +102,11 @@ CREATE TABLE workload_test.cluster_execution_insights (
 	last_error_redactable STRING NULL,
 	query_tags JSONB NULL,
 	CONSTRAINT uq_trei_run_txn_stmt
-		UNIQUE (test_run, txn_fingerprint_id, stmt_fingerprint_id, status, app_name, COALESCE(last_error_redactable, '<<NULL>>')),
+		UNIQUE (test_run, txn_fingerprint_id, stmt_fingerprint_id, status, app_name, COALESCE(last_error_redactable, '<<NULL>>'))
+		STORING (last_error_redactable),
     CONSTRAINT fk_trei_to_trc FOREIGN KEY (test_run)
         REFERENCES workload_test.test_run_configurations (test_run)
-		ON DELETE CASCADE,
-    INDEX idx_trei_by_test_run (test_run)
+		ON DELETE CASCADE
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(start_time::TIMESTAMPTZ + INTERVAL \'90 days\')');
 
@@ -145,8 +139,9 @@ CREATE TABLE workload_test.cluster_transaction_statistics (
     CONSTRAINT fk_trts_to_trc FOREIGN KEY (test_run)
         REFERENCES workload_test.test_run_configurations (test_run)
 		ON DELETE CASCADE,
-    CONSTRAINT uq_txn_stats UNIQUE (test_run, aggregated_ts, fingerprint_id, app_name),
-    INDEX idx_trts_by_test_run (test_run)
+    CONSTRAINT uq_txn_stats
+		UNIQUE (test_run, aggregated_ts, fingerprint_id, app_name)
+		STORING (metadata, statistics, aggregation_interval)
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'90 days\')');
 
@@ -168,7 +163,8 @@ CREATE TABLE workload_test.cluster_statement_statistics (
     CONSTRAINT fk_trss_to_trc FOREIGN KEY (test_run)
         REFERENCES workload_test.test_run_configurations (test_run)
 		ON DELETE CASCADE,
-    CONSTRAINT uq_stmt_stats UNIQUE (test_run, aggregated_ts, fingerprint_id, transaction_fingerprint_id, plan_hash, app_name),
-    INDEX idx_trss_by_test_run (test_run)
+    CONSTRAINT uq_stmt_stats
+		UNIQUE (test_run, aggregated_ts, fingerprint_id, transaction_fingerprint_id, plan_hash, app_name)
+		STORING (metadata, statistics, sampled_plan, aggregation_interval, index_recommendations)
 )
 WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'90 days\')');

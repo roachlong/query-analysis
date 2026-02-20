@@ -392,6 +392,7 @@ def backfill_contention(conn, run) -> int:
     """
 
     src_rows = fetchall(conn, sql_select)
+    conn.commit()
 
     if not src_rows:
         return 0

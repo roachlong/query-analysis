@@ -274,7 +274,7 @@ Now we can query the observability metrics for our last run to look for failures
 cockroach sql --url "$conn_str" -e """
 SELECT MAX(ROUND(CAST(statistics->'statistics'->'runLat'->'mean' AS FLOAT) * 1000, 2)) AS avg_ms,
        metadata->'query' AS QUERY
-FROM workload_test.statement_statistics
+FROM workload_test.cluster_statement_statistics
 WHERE test_run = 'load_test_2025_06_18'
   AND app_name = 'Transactions'
 GROUP BY 2

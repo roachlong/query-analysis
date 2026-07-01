@@ -126,7 +126,7 @@ CREATE TABLE workload_test.txn_id_map (
 );
 
 
--- crdb_internal.transaction_statistics
+-- crdb_internal.cluster_transaction_statistics
 CREATE TABLE workload_test.cluster_transaction_statistics (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     test_run STRING NOT NULL,
@@ -146,7 +146,7 @@ CREATE TABLE workload_test.cluster_transaction_statistics (
 WITH (ttl = 'on', ttl_expiration_expression = e'(aggregated_ts + INTERVAL \'90 days\')');
 
 
--- crdb_internal.statement_statistics
+-- crdb_internal.cluster_statement_statistics
 CREATE TABLE workload_test.cluster_statement_statistics (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     test_run STRING NOT NULL,

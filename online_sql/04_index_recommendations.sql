@@ -74,7 +74,7 @@ expanded AS (
 
     (ss.metadata->>'fullScan')::BOOL AS full_scan
 
-  FROM crdb_internal.statement_statistics ss
+  FROM crdb_internal.cluster_statement_statistics ss
   CROSS JOIN LATERAL
     unnest(ss.index_recommendations) AS rec(index_recommendation)
   CROSS JOIN LATERAL

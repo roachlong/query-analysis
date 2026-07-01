@@ -4,7 +4,7 @@ WITH stmt AS (
     transaction_fingerprint_id,
     (statistics->'statistics'->>'cnt')::INT                        AS execs,
     COALESCE((statistics->'statistics'->>'failureCount')::INT, 0)  AS failure_count
-  FROM crdb_internal.statement_statistics
+  FROM crdb_internal.cluster_statement_statistics
   WHERE aggregated_ts >= now() - interval '3 hours'
     AND app_name NOT LIKE '$ internal%'                                  -- drop internal jobs
     AND coalesce(metadata->>'db','') NOT IN ('system','crdb_internal')   -- drop system DB noise
@@ -33,7 +33,7 @@ SELECT
        ELSE 'ALWAYS'
   END AS failure_rate,
   (x.failed_stmt_execs::DECIMAL / (t.statistics->'statistics'->>'cnt')::INT::DECIMAL) AS failed_txn_ratio
-FROM crdb_internal.transaction_statistics AS t
+FROM crdb_internal.cluster_transaction_statistics AS t
 JOIN tx_stmt_rollup AS x
   ON t.app_name = x.app_name
  AND t.fingerprint_id = x.transaction_fingerprint_id

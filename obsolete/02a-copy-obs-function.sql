@@ -227,7 +227,7 @@ BEGIN
     -- check if we've already captured all the relevant stats data
     IF from_ts < to_ts THEN
       SELECT max(aggregation_interval) * (1 + 10/60) INTO agg_interval
-      FROM crdb_internal.transaction_statistics;
+      FROM crdb_internal.cluster_transaction_statistics;
       
       -- then check if we're beyond the aggregation threshold for the previous period
       from_ts := date_trunc('hour', from_ts);
@@ -242,7 +242,7 @@ BEGIN
           test_name, test_db, from_ts, to_ts;
 
         -- 7) insert statement stats
-        INSERT INTO workload_test.statement_statistics (
+        INSERT INTO workload_test.cluster_statement_statistics (
           test_run,
           aggregated_ts,
           fingerprint_id,
@@ -267,7 +267,7 @@ BEGIN
           s.sampled_plan,
           s.aggregation_interval,
           s.index_recommendations
-        FROM crdb_internal.statement_statistics AS s
+        FROM crdb_internal.cluster_statement_statistics AS s
         WHERE s.aggregated_ts >= from_ts
           AND s.aggregated_ts < to_ts
         ON CONFLICT (test_run, aggregated_ts, fingerprint_id, transaction_fingerprint_id, plan_hash, app_name)
@@ -277,11 +277,11 @@ BEGIN
           sampled_plan = EXCLUDED.sampled_plan,
           index_recommendations = EXCLUDED.index_recommendations;
 
-        RAISE NOTICE 'Copied statement_statistics: test_name=%, test_db=%, from_ts=%, to_ts=%',
+        RAISE NOTICE 'Copied cluster_statement_statistics: test_name=%, test_db=%, from_ts=%, to_ts=%',
           test_name, test_db, from_ts, to_ts;
 
         -- 8) insert transaction stats
-        INSERT INTO workload_test.transaction_statistics (
+        INSERT INTO workload_test.cluster_transaction_statistics (
           test_run,
           aggregated_ts,
           fingerprint_id,
@@ -298,7 +298,7 @@ BEGIN
           x.metadata,
           x.statistics,
           x.aggregation_interval
-        FROM crdb_internal.transaction_statistics AS x
+        FROM crdb_internal.cluster_transaction_statistics AS x
         WHERE x.aggregated_ts >= from_ts
           AND x.aggregated_ts < to_ts
         ON CONFLICT (test_run, aggregated_ts, fingerprint_id, app_name)
@@ -306,7 +306,7 @@ BEGIN
           metadata = EXCLUDED.metadata,
           statistics = EXCLUDED.statistics;
 
-        RAISE NOTICE 'Copied transaction_statistics: test_name=%, test_db=%, from_ts=%, to_ts=%',
+        RAISE NOTICE 'Copied cluster_transaction_statistics: test_name=%, test_db=%, from_ts=%, to_ts=%',
           test_name, test_db, from_ts, to_ts;
 
         -- 9) advance last_agg_copy_time so we don’t double-copy next run
@@ -316,13 +316,13 @@ BEGIN
 
         -- 10) now compute counts by querying each target table
         SELECT COUNT(*) INTO cnt_stmt
-          FROM workload_test.statement_statistics
+          FROM workload_test.cluster_statement_statistics
         WHERE test_run = test_name
           AND aggregated_ts >= from_ts
           AND aggregated_ts < to_ts;
 
         SELECT COUNT(*) INTO cnt_txn
-          FROM workload_test.transaction_statistics
+          FROM workload_test.cluster_transaction_statistics
         WHERE test_run = test_name
           AND aggregated_ts >= from_ts
           AND aggregated_ts < to_ts;
